@@ -167,7 +167,7 @@ class Trainer:
                 
                 
             self.model.generator.load_state_dict(
-                state_dict, strict=True
+                state_dict, strict=not bool(getattr(self.model.generator, "lora_rank", 0))
             )
             self.model.teacher.load_state_dict(
                 state_dict, strict=True
@@ -237,6 +237,7 @@ class Trainer:
             ema_model = self.generator_ema
         )
         generator_loss.backward()
+        self.model.release_kv_cache()
         generator_grad_norm = self.model.generator.clip_grad_norm_(
             self.max_grad_norm_generator)
 

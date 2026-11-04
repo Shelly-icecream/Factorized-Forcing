@@ -66,20 +66,24 @@ else:
     # Multi-step diffusion inference
     pipeline = CausalDiffusionInferencePipeline(config, device=device)
 
+def load_generator_state(state):
+    fixed = {}
+    for name, value in state.items():
+        name = name.replace("_fsdp_wrapped_module.", "")
+        fixed[name] = value
+    return fixed
+
+if getattr(config, "generator_ckpt", False):
+    base_checkpoint = torch.load(config.generator_ckpt, map_location="cpu")
+    base_key = "generator_ema" if "generator_ema" in base_checkpoint else "generator"
+    base_state = load_generator_state(base_checkpoint[base_key])
+    pipeline.generator.load_state_dict(base_state, strict=False)
+
 if args.checkpoint_path:
     state_dict = torch.load(args.checkpoint_path, map_location="cpu")
-    key = 'generator_ema' if args.use_ema else 'generator'
-    gen_sd = state_dict[key]
-
-    try:
-        pipeline.generator.load_state_dict(gen_sd)
-    except RuntimeError:
-        fixed = {}
-        for k, v in gen_sd.items():
-            if k.startswith("model._fsdp_wrapped_module."):
-                k = k.replace("model._fsdp_wrapped_module.", "model.", 1)
-            fixed[k] = v
-        pipeline.generator.load_state_dict(fixed, strict=False)
+    key = "generator_ema" if args.use_ema else "generator"
+    gen_sd = load_generator_state(state_dict[key])
+    pipeline.generator.load_state_dict(gen_sd, strict=True)
 
 pipeline = pipeline.to(dtype=torch.bfloat16)
 if low_memory:

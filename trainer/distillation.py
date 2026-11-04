@@ -52,47 +52,15 @@ class Trainer:
             )
 
         self.output_path = config.logdir
+        if self.is_main_process:
+            os.makedirs(self.output_path, exist_ok=True)
+        dist.barrier()
 
         # Step 2: Initialize the model and optimizer
         if config.distribution_loss == "dmd":
             self.model = DMD(config, device=self.device)
         else:
             raise ValueError("Invalid distribution matching loss")
-
-        # Save pretrained model state_dicts to CPU
-        self.fake_score_state_dict_cpu = self.model.fake_score.state_dict()
-
-        self.model.generator = fsdp_wrap(
-            self.model.generator,
-            sharding_strategy=config.sharding_strategy,
-            mixed_precision=config.mixed_precision,
-            wrap_strategy=config.generator_fsdp_wrap_strategy,
-            cpu_offload=False
-        )
-
-        self.model.real_score = fsdp_wrap(
-            self.model.real_score,
-            sharding_strategy=config.sharding_strategy,
-            mixed_precision=config.mixed_precision,
-            wrap_strategy=config.real_score_fsdp_wrap_strategy,
-            cpu_offload=False
-        )
-
-        self.model.fake_score = fsdp_wrap(
-            self.model.fake_score,
-            sharding_strategy=config.sharding_strategy,
-            mixed_precision=config.mixed_precision,
-            wrap_strategy=config.fake_score_fsdp_wrap_strategy,
-            cpu_offload=False
-        )
-
-        self.model.text_encoder = fsdp_wrap(
-            self.model.text_encoder,
-            sharding_strategy=config.sharding_strategy,
-            mixed_precision=config.mixed_precision,
-            wrap_strategy=config.text_encoder_fsdp_wrap_strategy,
-            cpu_offload=getattr(config, "text_encoder_cpu_offload", False)
-        )
 
         if not config.no_visualize or config.load_raw_video:
             self.model.vae = self.model.vae.to(
@@ -106,13 +74,16 @@ class Trainer:
             weight_decay=config.weight_decay
         )
 
-        self.critic_optimizer = torch.optim.AdamW(
-            [param for param in self.model.fake_score.parameters()
-             if param.requires_grad],
-            lr=config.lr_critic if hasattr(config, "lr_critic") else config.lr,
-            betas=(config.beta1_critic, config.beta2_critic),
-            weight_decay=config.weight_decay
-        )
+        critic_params = [param for param in self.model.fake_score.parameters()
+                         if param.requires_grad]
+        self.critic_optimizer = None
+        if critic_params:
+            self.critic_optimizer = torch.optim.AdamW(
+                critic_params,
+                lr=config.lr_critic if hasattr(config, "lr_critic") else config.lr,
+                betas=(config.beta1_critic, config.beta2_critic),
+                weight_decay=config.weight_decay
+            )
 
         # Step 3: Initialize the dataloader
         dataset = TextDataset(config.data_path)
@@ -128,7 +99,7 @@ class Trainer:
             print("DATASET SIZE %d" % len(dataset))
         self.dataloader = cycle(dataloader)
 
-        ##############################################################################################################
+
         # 6. Set up EMA parameter containers
         rename_param = (
             lambda name: name.replace("_fsdp_wrapped_module.", "")
@@ -153,6 +124,7 @@ class Trainer:
         if getattr(config, "generator_ckpt", False):
             print(f"Loading pretrained generator from {config.generator_ckpt}")
             state_dict = torch.load(config.generator_ckpt, map_location="cpu")
+            z_state_dict = state_dict.get("z_normalization")
             if "generator" in state_dict:
                 state_dict = state_dict["generator"]
                 fixed = {}
@@ -172,8 +144,9 @@ class Trainer:
                     fixed[k] = v
                 state_dict = fixed
             self.model.generator.load_state_dict(
-                state_dict, strict=True
-            )
+                state_dict, strict=not bool(getattr(self.model.generator, "lora_rank", 0)))
+            if z_state_dict is not None:
+                self.model.load_z_normalization_state_dict(z_state_dict)
 
         ##############################################################################################################
 
@@ -187,19 +160,17 @@ class Trainer:
 
     def save(self):
         print("Start gathering distributed model states...")
-        generator_state_dict = fsdp_state_dict(
-            self.model.generator)
-        critic_state_dict = fsdp_state_dict(
-            self.model.fake_score)
 
         if self.config.ema_start_step < self.step:
             state_dict = {
                 "generator_ema": self.generator_ema.full_state_dict(self.model.generator),
             }
         else:
+            generator_state_dict = fsdp_state_dict(self.model.generator)
             state_dict = {
                 "generator": generator_state_dict,
             }
+        state_dict["z_normalization"] = self.model.z_normalization_state_dict()
 
         if self.is_main_process:
             os.makedirs(os.path.join(self.output_path,
@@ -269,8 +240,18 @@ class Trainer:
                 clean_latent=clean_latent,
                 initial_latent=image_latent if self.config.i2v else None
             )
-           
+
+            torch.cuda.synchronize()
+            print(
+                f"[rank {dist.get_rank()}] before backward: "
+                f"alloc={torch.cuda.memory_allocated() / 1024**3:.2f}G, "
+                f"reserved={torch.cuda.memory_reserved() / 1024**3:.2f}G, "
+                f"peak={torch.cuda.max_memory_allocated() / 1024**3:.2f}G",
+                flush=True,
+            )
+
             generator_loss.backward()
+            self.model.release_kv_cache()
             generator_grad_norm = self.model.generator.clip_grad_norm_(
                 self.max_grad_norm_generator)
 
@@ -291,6 +272,7 @@ class Trainer:
         )
 
         critic_loss.backward()
+        self.model.release_kv_cache()
         critic_grad_norm = self.model.fake_score.clip_grad_norm_(
             self.max_grad_norm_critic)
 
@@ -314,18 +296,23 @@ class Trainer:
                 generator_log_dict = self.fwdbwd_one_step(batch, True)
 
                 self.generator_optimizer.step()
+                self.generator_optimizer.zero_grad(set_to_none=True)
                 if self.generator_ema is not None:
                     self.generator_ema.update(self.model.generator)
                 
                 
                 
 
-            # Train the critic
-            self.critic_optimizer.zero_grad(set_to_none=True)
-            batch = next(self.dataloader)
-            critic_log_dict = self.fwdbwd_one_step(batch, False)
-                
-            self.critic_optimizer.step()
+            # Train the critic when enabled. The fake score can remain frozen
+            # and still provide the DMD score used by the generator update.
+            if self.critic_optimizer is not None:
+                self.critic_optimizer.zero_grad(set_to_none=True)
+                batch = next(self.dataloader)
+                critic_log_dict = self.fwdbwd_one_step(batch, False)
+                self.critic_optimizer.step()
+                self.critic_optimizer.zero_grad(set_to_none=True)
+            else:
+                critic_log_dict = {}
 
             # Increment the step since we finished gradient update
             self.step += 1
@@ -353,15 +340,20 @@ class Trainer:
                         }
                     )
 
-                wandb_loss_dict.update(
-                    {
-                        "critic_loss": critic_log_dict["critic_loss"].mean().item(),
-                        "critic_grad_norm": critic_log_dict["critic_grad_norm"].mean().item()
-                    }
-                )
+                if critic_log_dict:
+                    wandb_loss_dict.update(
+                        {
+                            "critic_loss": critic_log_dict["critic_loss"].mean().item(),
+                            "critic_grad_norm": critic_log_dict["critic_grad_norm"].mean().item()
+                        }
+                    )
 
                 if not self.disable_wandb:
                     wandb.log(wandb_loss_dict, step=self.step)
+
+            if getattr(self.config, "max_train_steps", -1) > 0 and \
+                    self.step >= self.config.max_train_steps:
+                break
 
             if self.step % self.config.gc_interval == 0:
                 if dist.get_rank() == 0:
@@ -377,3 +369,7 @@ class Trainer:
                     if not self.disable_wandb:
                         wandb.log({"per iteration time": current_time - self.previous_time}, step=self.step)
                     self.previous_time = current_time
+
+        if (not self.config.no_save) and self.step > start_step and \
+                self.step % self.config.log_iters != 0:
+            self.save()

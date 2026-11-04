@@ -12,7 +12,7 @@ class NaiveConsistency(BaseModel):
         print(args)
         # Step 1: Initialize all models
         self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=args.is_causal)
-        self.generator.model.requires_grad_(True)
+        self.generator.set_trainable()
         
         
         self.generator_ema = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=args.is_causal)
@@ -65,7 +65,7 @@ class NaiveConsistency(BaseModel):
         
     def _initialize_models(self, args, device):
         self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=True)
-        self.generator.model.requires_grad_(True)
+        self.generator.set_trainable()
 
         self.teacher = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=True)
         self.teacher.model.requires_grad_(False)

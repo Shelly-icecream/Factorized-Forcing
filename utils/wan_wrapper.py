@@ -1,3 +1,4 @@
+import gc
 import types
 from typing import List, Optional
 import torch
@@ -11,6 +12,34 @@ from wan.modules.t5 import umt5_xxl
 from wan.modules.causal_model import CausalWanModel
 
 
+class LoRALinear(nn.Linear):
+    def __init__(self, linear: nn.Linear, rank: int, alpha: float, dropout: float):
+        super().__init__(linear.in_features, linear.out_features, linear.bias is not None)
+        self.weight.data.copy_(linear.weight.data)
+        if linear.bias is not None:
+            self.bias.data.copy_(linear.bias.data)
+        self.weight.requires_grad_(False)
+        if self.bias is not None:
+            self.bias.requires_grad_(False)
+        self.lora_down = nn.Linear(linear.in_features, rank, bias=False)
+        self.lora_up = nn.Linear(rank, linear.out_features, bias=False)
+        self.scaling = alpha / rank
+        self.dropout = nn.Dropout(dropout)
+        nn.init.kaiming_uniform_(self.lora_down.weight, a=5 ** 0.5)
+        nn.init.zeros_(self.lora_up.weight)
+
+    def forward(self, x):
+        return super().forward(x) + self.lora_up(self.dropout(self.lora_down(x))) * self.scaling
+
+
+def add_lora_adapters(module: nn.Module, rank: int, alpha: float, dropout: float, targets: tuple[str, ...]):
+    for name, child in list(module.named_children()):
+        if isinstance(child, nn.Linear) and name in targets:
+            setattr(module, name, LoRALinear(child, rank, alpha, dropout))
+        else:
+            add_lora_adapters(child, rank, alpha, dropout, targets)
+
+
 class WanTextEncoder(torch.nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -18,13 +47,15 @@ class WanTextEncoder(torch.nn.Module):
         self.text_encoder = umt5_xxl(
             encoder_only=True,
             return_tokenizer=False,
-            dtype=torch.float32,
+            dtype=torch.bfloat16,
             device=torch.device('cpu')
         ).eval().requires_grad_(False)
-        self.text_encoder.load_state_dict(
-            torch.load("wan_models/Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth",
-                       map_location='cpu', weights_only=False)
-        )
+        state_dict = torch.load(
+            "wan_models/Wan2.1-T2V-1.3B/models_t5_umt5-xxl-enc-bf16.pth",
+            map_location='cpu', weights_only=False)
+        self.text_encoder.load_state_dict(state_dict)
+        del state_dict
+        gc.collect()
 
         self.tokenizer = HuggingfaceTokenizer(
             name="wan_models/Wan2.1-T2V-1.3B/google/umt5-xxl/", seq_len=512, clean='whitespace')
@@ -119,7 +150,11 @@ class WanDiffusionWrapper(torch.nn.Module):
             timestep_shift=8.0,
             is_causal=False,
             local_attn_size=-1,
-            sink_size=0
+            sink_size=0,
+            lora_rank=0,
+            lora_alpha=None,
+            lora_dropout=0.0,
+            lora_target_modules=("q", "k", "v", "o")
     ):
         super().__init__()
 
@@ -129,6 +164,19 @@ class WanDiffusionWrapper(torch.nn.Module):
         else:
             self.model = WanModel.from_pretrained(f"wan_models/{model_name}/")
         self.model.eval()
+        self.lora_rank = lora_rank
+        if lora_rank > 0:
+            add_lora_adapters(
+                self.model,
+                rank=lora_rank,
+                alpha=lora_alpha or lora_rank,
+                dropout=lora_dropout,
+                targets=tuple(lora_target_modules),
+            )
+            self.model.requires_grad_(False)
+            for name, parameter in self.model.named_parameters():
+                if ".lora_down." in name or ".lora_up." in name:
+                    parameter.requires_grad_(True)
 
         # For non-causal diffusion, all frames share the same timestep
         self.uniform_timestep = not is_causal
@@ -143,6 +191,15 @@ class WanDiffusionWrapper(torch.nn.Module):
 
     def enable_gradient_checkpointing(self) -> None:
         self.model.enable_gradient_checkpointing()
+
+    def set_trainable(self) -> None:
+        if self.lora_rank > 0:
+            self.model.requires_grad_(False)
+            for name, parameter in self.model.named_parameters():
+                if ".lora_down." in name or ".lora_up." in name:
+                    parameter.requires_grad_(True)
+        else:
+            self.model.requires_grad_(True)
 
     def adding_cls_branch(self, atten_dim=1536, num_class=4, time_embed_dim=0) -> None:
         # NOTE: This is hard coded for WAN2.1-T2V-1.3B for now!!!!!!!!!!!!!!!!!!!!

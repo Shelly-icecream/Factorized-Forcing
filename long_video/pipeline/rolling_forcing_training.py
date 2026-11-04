@@ -433,6 +433,12 @@ class RollingForcingTrainingPipeline:
 
         return output, denoised_timestep_from, denoised_timestep_to
 
+    def release_kv_cache(self):
+        self.kv_cache_clean = None
+        self.kv_cache1 = None
+        self.kv_cache2 = None
+        self.crossattn_cache = None
+
     def _initialize_kv_cache(self, batch_size, dtype, device):
         """
         Initialize a Per-GPU KV cache for the Wan model.

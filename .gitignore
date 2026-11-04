@@ -1,9 +1,44 @@
-__pycache__
-*.egg-info
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-wan_models
-checkpoints
-output
-dataset
+# Virtual environments and local configuration
+.venv/
+venv/
+env/
+.env
+.env.*
+!.env.example
+
+# Python packaging and build artifacts
+*.egg-info/
+build/
+dist/
+pip-wheel-metadata/
+
+# IDE and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Model weights, datasets, and experiment outputs
+wan_models/
+checkpoints/
+output/
+dataset/
+logs/
+stage3_outputs/
+
+# Local Hugging Face and prompt cache
+.cache/
+**/.cache/
+
+# Generated prompt data
 prompts/vidprom_filtered_extended.txt
-logs

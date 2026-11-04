@@ -245,6 +245,7 @@ class Trainer:
             )
 
             generator_loss.backward()
+            self.model.release_kv_cache()
             generator_grad_norm = self.model.generator.clip_grad_norm_(
                 self.max_grad_norm_generator)
 
@@ -265,6 +266,7 @@ class Trainer:
         )
 
         critic_loss.backward()
+        self.model.release_kv_cache()
         critic_grad_norm = self.model.fake_score.clip_grad_norm_(
             self.max_grad_norm_critic)
 
@@ -318,6 +320,7 @@ class Trainer:
                 extras_list.append(extra)
                 generator_log_dict = merge_dict_list(extras_list)
                 self.generator_optimizer.step()
+                self.generator_optimizer.zero_grad(set_to_none=True)
                 if self.generator_ema is not None:
                     self.generator_ema.update(self.model.generator)
 
@@ -329,6 +332,7 @@ class Trainer:
             extras_list.append(extra)
             critic_log_dict = merge_dict_list(extras_list)
             self.critic_optimizer.step()
+            self.critic_optimizer.zero_grad(set_to_none=True)
 
             # Increment the step since we finished gradient update
             self.step += 1

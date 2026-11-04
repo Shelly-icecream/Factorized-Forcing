@@ -10,6 +10,16 @@ gc_interval: 100
 context_noise: 0
 causal: true
 
+# Optional Stage 3 condition-score experiment. Disabled by default.
+stage3_enabled: false
+stage3_mode: baseline
+stage3_analysis_interval: 0
+stage3_microbatch: 1
+stage3_cfg_mode: baseline
+stage3_parser_version: rules_en_v2
+stage3_parser_rules: stage3/rules_en_v2.json
+stage3_records_dir: stage3_outputs
+
 ckpt_step: 0
 prompt_name: MovieGenVideoBench
 prompt_path: prompts/MovieGenVideoBench.txt

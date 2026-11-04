@@ -1,0 +1,63 @@
+trainer: stage3
+data_path: stage3_outputs/vidprom_filtered_extended.jsonl
+stage3_parser_version: rules_en_v2
+generator_ckpt: checkpoints/framewise/causal_forcing.pt
+resume: null
+logdir: stage3_outputs/training
+
+real_name: Wan2.1-T2V-1.3B
+fake_name: Wan2.1-T2V-1.3B
+staged_fsdp_init: true
+sharding_strategy: full
+generator_fsdp_wrap_strategy: size
+real_score_fsdp_wrap_strategy: size
+fake_score_fsdp_wrap_strategy: size
+text_encoder_fsdp_wrap_strategy: size
+generator_cpu_offload: true
+real_score_cpu_offload: true
+fake_score_cpu_offload: true
+text_encoder_cpu_offload: true
+train_fake_score: true
+mixed_precision: true
+gradient_checkpointing: true
+stage3_activation_cpu_offload: false
+model_kwargs:
+  timestep_shift: 5.0
+  lora_rank: 8
+  lora_alpha: 8
+
+denoising_step_list: [1000, 750, 500, 250]
+warp_denoising_step: true
+num_train_timestep: 1000
+timestep_shift: 5.0
+ts_schedule: false
+guidance_scale: 0.0
+denoising_loss_type: flow
+distribution_loss: dmd
+num_frame_per_block: 1
+num_training_frames: 12
+image_or_video_shape: [1, 12, 16, 60, 104]
+batch_size: 1
+load_raw_video: false
+
+stage3_microbatch: 1
+stage3_normalize: true
+stage3_component_weights: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 2.0, PB: 1.0, AB: 2.0, PAB: 1.0}
+stage3_subset_probabilities: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 1.0, PB: 1.0, AB: 1.0, PAB: 1.0}
+z_normalization_mode: timestep_ema
+z_ema_decay: 0.99
+z_ema_eps: 1.0e-6
+lr: 2.0e-6
+lr_critic: 4.0e-7
+beta1: 0.0
+beta2: 0.999
+beta1_critic: 0.0
+beta2_critic: 0.999
+max_grad_norm_generator: 10.0
+max_grad_norm_critic: 10.0
+dfake_gen_update_ratio: 5
+ema_weight: 0.99
+ema_start_step: 200
+max_train_steps: 250
+log_iters: 100
+seed: 42

@@ -1,3 +1,56 @@
+设 \(S\subseteq\{P,A,B\}\)，八种条件的 score 差异为：
+
+\
+d_S=s_{\mathrm{fake}}(x_t\mid c_S)-s_{\mathrm{real}}(x_t\mid c_S)
+\
+
+**① 分解与加权：`stage3_component_weights`**
+
+\[
+\Delta_S=\sum_{T\subseteq S}(-1)^{|S|-|T|}d_T,
+\qquad
+D=\sum_S w_S\Delta_S
+\]
+
+例如 \(\Delta_{PA}=d_{PA}-d_P-d_A+d_\varnothing\)。全部 \(w_S=1\) 时：
+
+\[
+\boxed{D=d_{PAB}}
+\]
+
+**② 更新 generator**
+
+\[
+g=\frac{\sigma^2}{(1-\sigma)Z}D,
+\qquad
+\boxed{\mathcal L_G=\tfrac12\operatorname{MSE}
+\bigl(x,\operatorname{stopgrad}(x-g)\bigr)}
+\]
+
+其中 \(x=G_\theta(z,c_{PAB})\)，\(Z\) 为归一化因子，MSE 仅计算选中位置。
+
+**③ 训练 fake：`stage3_subset_probabilities`**
+
+\[
+S\sim p_S=\frac{q_S}{\sum_Tq_T},
+\qquad
+x_t=(1-\sigma)\tilde x+\sigma\epsilon
+\]
+
+\[
+\boxed{\mathcal L_F=\operatorname{MSE}
+\bigl(v_\phi(x_t\mid c_S),\,\epsilon-\tilde x\bigr)}
+\]
+
+其中 \(\tilde x=\operatorname{stopgrad}(G_\theta(z,c_S))\)。全部 \(q_S=1\) 时，每种条件以 \(1/8\) 的概率被选中。
+
+
+
+
+
+
+
+
 <div align="center">
 
 ## Causal Forcing & Causal Forcing++
@@ -463,3 +516,7 @@ If you find the method useful, please cite
   year={2026}
 }
 ```
+
+
+
+
