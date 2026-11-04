@@ -179,16 +179,30 @@ class Stage3ParserTests(unittest.TestCase):
         self.assertNotEqual(result.failure_reason, "multiple_subjects")
         self.assertEqual(result.person, "A man")
 
-    def test_ambiguous_caption_keeps_all_recognized_actions(self):
+    def test_multiple_actions_are_kept_in_all_action_conditions(self):
         result = CaptionParser().parse(
             "A man reaches for a joystick in an electronics store. "
             "He is standing near a display and selects the joystick."
         )
-        self.assertEqual(result.parse_status, "ambiguous")
-        self.assertEqual(result.failure_reason, "multiple_actions")
+        self.assertEqual(result.parse_status, "ok")
+        self.assertIsNone(result.failure_reason)
         self.assertIn("reaches", result.action)
         self.assertIn("standing", result.action)
         self.assertIn("selects", result.action)
+        self.assertEqual(sum(span.field == "action" for span in result.spans), 3)
+        self.assertEqual(result.conditions["PAB"], result.caption)
+        for verb in ("reaches", "standing", "selects"):
+            for name in ("A", "PA", "AB", "PAB"):
+                self.assertIn(verb, result.conditions[name])
+            for name in ("empty", "P", "B", "PB"):
+                self.assertNotIn(verb, result.conditions[name])
+        self.assertTrue(all(a.end <= b.start for a, b in zip(result.spans, result.spans[1:])))
+
+    def test_missing_action_still_fails(self):
+        result = CaptionParser().parse("A man in a park.")
+        self.assertEqual(result.failure_reason, "action_missing")
+        self.assertEqual(result.conditions, {})
+
 
 
 try:

@@ -4,6 +4,7 @@ import json
 import re
 
 from .parser import CaptionParser
+from .spacy_parser import make_parser, DEFAULT_SPACY_MODEL
 
 
 def audit_jsonl(input_path: str, parser: CaptionParser, example_limit: int = 3) -> dict:
@@ -59,10 +60,12 @@ def main():
     argument_parser = argparse.ArgumentParser(description="Audit Stage 3 caption parsing coverage")
     argument_parser.add_argument("input_jsonl")
     argument_parser.add_argument("--rules", default="stage3/rules_en_v2.json")
-    argument_parser.add_argument("--parser-version", default="rules_en_v2")
+    argument_parser.add_argument("--parser-version")
+    argument_parser.add_argument("--backend", choices=("spacy", "rules"), default="spacy")
+    argument_parser.add_argument("--spacy-model", default=DEFAULT_SPACY_MODEL)
     argument_parser.add_argument("--example-limit", type=int, default=3)
     args = argument_parser.parse_args()
-    parser = CaptionParser.from_json(args.rules, args.parser_version)
+    parser = make_parser(args.backend, args.rules, args.parser_version, args.spacy_model)
     print(json.dumps(audit_jsonl(args.input_jsonl, parser, args.example_limit), indent=2))
 
 

@@ -18,9 +18,10 @@ def build_conditions(caption, spans, remaining, valid=True) -> dict[str, str]:
     if not valid:
         return {}
     fields = {
-        span.field: span.text
-        for span in spans
-        if span.field in {"person", "action", "background"}
+        field: _join(tuple(span.text for span in sorted(spans, key=lambda span: span.start)
+                           if span.field == field))
+        for field in ("person", "action", "background")
+        if any(span.field == field for span in spans)
     }
     if set(fields) != {"person", "action", "background"}:
         return {}

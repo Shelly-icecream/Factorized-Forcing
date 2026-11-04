@@ -1,6 +1,6 @@
 trainer: stage3
-data_path: stage3_outputs/vidprom_filtered_extended.jsonl
-stage3_parser_version: rules_en_v2
+data_path: stage3_outputs/vidprom_filtered_extended.parsed.spacy.jsonl
+stage3_parser_version: spacy_en_v1_multi_action
 generator_ckpt: checkpoints/framewise/causal_forcing.pt
 resume: null
 logdir: stage3_outputs/training

@@ -147,3 +147,67 @@ python -m stage3.train --fsdp-smoke-test
 The local Windows environment lacks NCCL and the full Wan runtime. CPU/simulated
 training and YAML configuration have been verified; full Wan forward/backward,
 sharded multi-GPU recovery, GPU memory use and throughput require the server run.
+
+## Multi-action parsing
+
+The rules-only parser version is `rules_en_v3_multi_action` (using the existing
+`rules_en_v2.json` vocabulary). A caption may contain multiple action spans;
+all are joined in caption order for A/PA/AB and removed from empty/P/B/PB.
+PAB stays identical to the original caption. Exactly one subject and one
+background are still required, and negation and overlapping spans still fail.
+This change does not distinguish camera verbs or resolve action word senses.
+Regenerate parsed data before training with the updated version:
+
+```bash
+python -m stage3.parse_captions prompts/vidprom_filtered_extended.txt \
+  stage3_outputs/vidprom_filtered_extended.parsed.multi_action.jsonl \
+  --backend rules --input-format text --workers 8
+```
+
+Set `data_path` to the regenerated JSONL and `stage3_parser_version` to
+`rules_en_v3_multi_action` when training on rules-only data.
+
+## Local spaCy preprocessing (default CLI backend)
+
+`stage3.parse_captions` and `stage3.audit` default to the local CPU
+`en_core_web_sm` pipeline, with parser version `spacy_en_v1_multi_action`.
+No LLM, GPU or API call is used during parsing. The existing `CaptionParser`
+Python class remains the rules-only baseline; use `SpacyCaptionParser` for syntax.
+Missing spaCy/model dependencies fail explicitly rather than silently changing backends.
+
+Use a separate preprocessing environment to keep spaCy's NumPy dependencies
+independent of the training environment:
+
+```bash
+python -m venv .venv-spacy
+.venv-spacy/bin/python -m pip install -r stage3/requirements-spacy.txt
+.venv-spacy/bin/python -m stage3.parse_captions \
+  prompts/vidprom_filtered_extended.txt \
+  stage3_outputs/vidprom_filtered_extended.parsed.spacy.jsonl \
+  --input-format text --workers 4
+```
+
+The training configuration expects this new JSONL and parser version. Training
+does not load spaCy. Each preprocessing worker loads one CPU pipeline; use fewer
+workers if RAM is limited. `--backend rules` selects the previous rules parser.
+The legacy `python -m stage3.parser --input ... --output ...` stays rules-only.
+
+Syntax assists verb POS checks, lemmatization, direct objects, camera-subject
+exclusion, standalone known location noun phrases, and unknown noun/proper-name
+subjects of accepted actions. The JSON remains the semantic vocabulary for
+verbs and locations. One subject and one background are still required; all
+recognized action spans form A. This does not perform coreference resolution,
+resolve all location/argument ambiguities, or guarantee a leakage-free remainder.
+Camera descriptions remain shared context in all subsets.
+
+Reproduce the paired reservoir sample comparison:
+
+```bash
+.venv-spacy/bin/python -m stage3.sample_audit \
+  prompts/vidprom_filtered_extended.txt stage3_outputs/spacy_sample_audit.json \
+  --sample-size 3000 --seed 42
+.venv-spacy/bin/python -m unittest discover -s tests -p 'test_stage3_spacy.py'
+```
+
+The report records both parsers' counts, sample transitions, examples, and actual
+spaCy/model versions. The spaCy-specific tests skip when dependencies are absent.

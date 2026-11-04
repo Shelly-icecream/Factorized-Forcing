@@ -7,7 +7,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
-DEFAULT_PARSER_VERSION = "rules_en_v2"
+DEFAULT_PARSER_VERSION = "rules_en_v3_multi_action"
 AMBIGUOUS_ACTION_NOUNS = {"row"}
 NEGATION_RE = re.compile(r"\b(?:not|no|never|without|isn't|aren't|don't|doesn't|can't)\b", re.I)
 ARTICLE_RE = re.compile(r"\b(?:a|an|the)\s+", re.I)
@@ -97,18 +97,20 @@ class CaptionParser:
         subjects = self._subject_matches(lowered, actions, backgrounds)
         if len(subjects) != 1:
             failure = failure or ("person_missing" if not subjects else "multiple_subjects")
-        if len(actions) != 1:
-            failure = failure or ("action_missing" if not actions else "multiple_actions")
+        if not actions:
+            failure = failure or "action_missing"
         if len(backgrounds) != 1:
             failure = failure or ("background_missing" if not backgrounds else "multiple_backgrounds")
 
-        if len(subjects) == 1 and len(actions) == 1 and len(backgrounds) == 1:
+        if len(subjects) == 1 and actions and len(backgrounds) == 1:
             person_start, person_end, person_rule = subjects[0]
-            action_start, action_end, action_rule = actions[0]
+            action_start = min((start for start, _, _ in actions if start >= person_end),
+                               default=actions[0][0])
             person_start, person_end = self._expand_person(caption, person_start, person_end, action_start, backgrounds)
             spans = [
                 Span("person", person_start, person_end, caption[person_start:person_end].strip(), person_rule),
-                Span("action", action_start, action_end, caption[action_start:action_end].strip(), action_rule),
+                *[Span("action", start, end, caption[start:end].strip(), rule)
+                  for start, end, rule in actions],
                 Span("background", backgrounds[0][0], backgrounds[0][1],
                      caption[backgrounds[0][0]:backgrounds[0][1]].strip(), backgrounds[0][2]),
             ]
@@ -124,7 +126,8 @@ class CaptionParser:
         from .conditions import build_conditions
         conditions = build_conditions(caption, spans, remaining)
         leakage = self._leakage_warning(remaining)
-        fields = {span.field: span.text for span in spans}
+        fields = {field: " ".join(span.text for span in spans if span.field == field)
+                  for field in ("person", "action", "background")}
         return ParseResult(
             caption, fields["person"], fields["action"], fields["background"], remaining,
             tuple(spans), "ok", None, self.parser_version, conditions, leakage,
@@ -549,7 +552,7 @@ def parse_jsonl(input_path, output_path, parser, input_format="auto", workers=1,
             from itertools import islice
             with ProcessPoolExecutor(
                 max_workers=workers, initializer=_init_worker,
-                initargs=(parser.raw_rules, parser.parser_version),
+                initargs=(parser.raw_rules, parser.parser_version, getattr(parser, "model", None)),
             ) as pool:
                 while True:
                     batch = list(islice(captions, workers * chunksize))
@@ -583,9 +586,13 @@ def _write_results(results, target, counts):
         target.write(json.dumps(result, ensure_ascii=False) + "\n")
 
 
-def _init_worker(rules, parser_version):
+def _init_worker(rules, parser_version, model=None):
     global _worker_parser
-    _worker_parser = CaptionParser(rules, parser_version)
+    if model is None:
+        _worker_parser = CaptionParser(rules, parser_version)
+    else:
+        from .spacy_parser import SpacyCaptionParser
+        _worker_parser = SpacyCaptionParser(rules, parser_version, model)
 
 
 def _parse_worker(caption):
