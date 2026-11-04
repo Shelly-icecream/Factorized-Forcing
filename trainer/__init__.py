@@ -1,13 +1,14 @@
-from .diffusion import Trainer as DiffusionTrainer
-from .gan import Trainer as GANTrainer
-from .ode import Trainer as ODETrainer
-from .distillation import Trainer as ScoreDistillationTrainer
-from .naive_cd import Trainer as ConsistencyDistillationTrainer
+"""Lazy public exports for training components."""
 
-__all__ = [
-    "DiffusionTrainer",
-    "GANTrainer",
-    "ODETrainer",
-    "ScoreDistillationTrainer",
-    "ConsistencyDistillationTrainer"
-]
+from importlib import import_module
+
+_MODULES = {'DiffusionTrainer': 'diffusion', 'GANTrainer': 'gan', 'ODETrainer': 'ode', 'ScoreDistillationTrainer': 'distillation', 'ConsistencyDistillationTrainer': 'naive_cd'}
+__all__ = list(_MODULES)
+
+def __getattr__(name):
+    if name not in _MODULES:
+        raise AttributeError(name)
+    module = import_module("." + _MODULES[name], __name__)
+    value = getattr(module, "Trainer")
+    globals()[name] = value
+    return value

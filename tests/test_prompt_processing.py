@@ -1,10 +1,10 @@
 import unittest
 
-from stage3.conditions import CONDITION_NAMES
-from stage3.parser import CaptionParser
+from utils.pab_conditions import CONDITION_NAMES
+from prompt_processing.parser import CaptionParser
 
 
-class Stage3ParserTests(unittest.TestCase):
+class PABParserTests(unittest.TestCase):
     def test_expanded_actions_do_not_duplicate_contained_verbs(self):
         result = CaptionParser().parse(
             "A man is holding a cup and walking in a park."
@@ -207,14 +207,14 @@ class Stage3ParserTests(unittest.TestCase):
 
 try:
     import torch
-    from stage3.decomposition import decompose_conditions, reconstruct_full_condition
-    from stage3.prediction import linear_flow_difference_to_score, linear_flow_velocity_to_score
+    from model.score_decomposition import decompose_conditions, reconstruct_full_condition
+    from model.score_prediction import linear_flow_difference_to_score, linear_flow_velocity_to_score
 except ModuleNotFoundError:
     torch = None
 
 
 @unittest.skipIf(torch is None, "torch is not installed in the lightweight test environment")
-class Stage3TensorTests(unittest.TestCase):
+class PABTensorTests(unittest.TestCase):
     def test_inclusion_exclusion_reconstructs_full_condition(self):
         outputs = torch.arange(8 * 2, dtype=torch.float32).reshape(8, 2)
         components = decompose_conditions(outputs)

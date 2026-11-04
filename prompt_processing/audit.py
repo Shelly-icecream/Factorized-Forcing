@@ -3,7 +3,7 @@ from collections import Counter, defaultdict
 import json
 import re
 
-from .parser import CaptionParser
+from prompt_processing.parser import CaptionParser
 from .spacy_parser import make_parser, DEFAULT_SPACY_MODEL
 
 
@@ -57,9 +57,9 @@ def _candidate_fragments(remaining: str) -> list[str]:
 
 
 def main():
-    argument_parser = argparse.ArgumentParser(description="Audit Stage 3 caption parsing coverage")
+    argument_parser = argparse.ArgumentParser(description="Audit P/A/B caption parsing coverage")
     argument_parser.add_argument("input_jsonl")
-    argument_parser.add_argument("--rules", default="stage3/rules_en_v2.json")
+    argument_parser.add_argument("--rules", default="prompt_processing/rules.json")
     argument_parser.add_argument("--parser-version")
     argument_parser.add_argument("--backend", choices=("spacy", "rules"), default="spacy")
     argument_parser.add_argument("--spacy-model", default=DEFAULT_SPACY_MODEL)

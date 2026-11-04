@@ -1,12 +1,12 @@
-"""Stage 3 objectives, shared by real Wan training and small smoke tests."""
+"""Factorized DMD objectives, shared by real Wan training and small smoke tests."""
 
 import math
 import torch
 
-from .conditions import CONDITION_NAMES, CONDITION_INDICES
-from .decomposition import decompose_conditions
-from .fake_training import make_fake_score_batch, flow_target_loss
-from .score_analysis import evaluate_conditions, make_wan_predictor
+from utils.pab_conditions import CONDITION_NAMES, CONDITION_INDICES
+from model.score_decomposition import decompose_conditions
+from model.fake_score_training import make_fake_score_batch, flow_target_loss
+from model.condition_scores import evaluate_conditions, make_wan_predictor
 
 
 def validate_weights(weights):
@@ -23,10 +23,10 @@ def sigma_at(scheduler, timestep, reference):
     return sigma.reshape(timestep.shape)
 
 
-class Stage3Objective:
+class FactorizedObjective:
     def __init__(self, model, shape, microbatch=1, weights=None, normalize=True):
         if len(shape) != 5 or shape[0] != 1:
-            raise ValueError("Stage 3 currently requires batch_size=1 and [1,F,C,H,W] shape")
+            raise ValueError("Factorized DMD currently requires batch_size=1 and [1,F,C,H,W] shape")
         if microbatch < 1:
             raise ValueError("condition microbatch must be positive")
         self.model, self.shape, self.microbatch = model, list(shape), microbatch
@@ -84,7 +84,7 @@ class Stage3Objective:
                 else:
                     gradient /= z.mean().clamp_min(1e-6)
             if not torch.isfinite(gradient).all():
-                raise FloatingPointError("nonfinite Stage 3 score gradient")
+                raise FloatingPointError("nonfinite factorized score gradient")
         selected = torch.ones_like(rollout, dtype=torch.bool) if mask is None else mask.bool().expand_as(rollout)
         if not selected.any():
             raise ValueError("rollout gradient mask is empty")
@@ -109,3 +109,27 @@ class Stage3Objective:
                                         conditional_dict=encoded, timestep=timestep)[:2]
         loss = flow_target_loss(flow.float(), batch)
         return loss, {"fake_loss": loss.detach()}
+
+
+def validate_factorized_config(config):
+    """Check the optional P/A/B objective before model memory is allocated."""
+    from .fake_score_training import sample_subset
+    if config.batch_size != 1 or list(config.image_or_video_shape)[0] != 1:
+        raise ValueError("factorized DMD requires per-rank batch_size=1")
+    if config.i2v:
+        raise ValueError("factorized DMD currently supports text-to-video only")
+    if not config.train_fake_score or not config.staged_fsdp_init:
+        raise ValueError("factorized DMD requires train_fake_score and staged_fsdp_init")
+    if config.denoising_loss_type != "flow":
+        raise ValueError("factorized fake training requires denoising_loss_type=flow")
+    if config.factorized_microbatch < 1:
+        raise ValueError("factorized_microbatch must be positive")
+    if config.max_train_steps < 1 or config.dfake_gen_update_ratio < 1 or config.log_iters < 1:
+        raise ValueError("step counts, update ratio and save interval must be positive")
+    if not 0 <= config.ema_weight < 1:
+        raise ValueError("ema_weight must be in [0, 1)")
+    validate_weights(dict(config.factorized_component_weights))
+    probabilities = dict(config.factorized_subset_probabilities)
+    sample_subset(probabilities, torch.Generator().manual_seed(0))
+    if any(probabilities[name] <= 0 for name in CONDITION_NAMES):
+        raise ValueError("all eight fake subsets require positive sampling probabilities")

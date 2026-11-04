@@ -1,9 +1,10 @@
-trainer: stage3
-data_path: stage3_outputs/vidprom_filtered_extended.parsed.spacy.jsonl
-stage3_parser_version: spacy_en_v1_multi_action
+trainer: score_distillation
+factorized_enabled: true
+data_path: factorized_outputs/vidprom_filtered_extended.parsed.spacy.jsonl
+factorized_parser_version: spacy_en_v1_multi_action
 generator_ckpt: checkpoints/framewise/causal_forcing.pt
 resume: null
-logdir: stage3_outputs/training
+logdir: factorized_outputs/training
 
 real_name: Wan2.1-T2V-1.3B
 fake_name: Wan2.1-T2V-1.3B
@@ -20,7 +21,7 @@ text_encoder_cpu_offload: true
 train_fake_score: true
 mixed_precision: true
 gradient_checkpointing: true
-stage3_activation_cpu_offload: false
+factorized_activation_cpu_offload: false
 model_kwargs:
   timestep_shift: 5.0
   lora_rank: 8
@@ -40,10 +41,10 @@ image_or_video_shape: [1, 12, 16, 60, 104]
 batch_size: 1
 load_raw_video: false
 
-stage3_microbatch: 1
-stage3_normalize: true
-stage3_component_weights: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 2.0, PB: 1.0, AB: 2.0, PAB: 1.0}
-stage3_subset_probabilities: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 1.0, PB: 1.0, AB: 1.0, PAB: 1.0}
+factorized_microbatch: 1
+factorized_normalize: true
+factorized_component_weights: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 2.0, PB: 1.0, AB: 2.0, PAB: 1.0}
+factorized_subset_probabilities: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 1.0, PB: 1.0, AB: 1.0, PAB: 1.0}
 z_normalization_mode: timestep_ema
 z_ema_decay: 0.99
 z_ema_eps: 1.0e-6

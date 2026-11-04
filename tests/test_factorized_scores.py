@@ -3,10 +3,10 @@ from types import SimpleNamespace
 
 import torch
 
-from stage3.conditions import CONDITION_NAMES, CONDITION_MASKS
-from stage3.decomposition import decompose_conditions, reconstruct_full_condition
-from stage3.score_analysis import evaluate_conditions, make_wan_predictor, analyze_teacher_and_fake
-from stage3.fake_training import make_fake_score_batch, score_target_loss, flow_target_loss, sample_subset
+from utils.pab_conditions import CONDITION_NAMES, CONDITION_MASKS
+from model.score_decomposition import decompose_conditions, reconstruct_full_condition
+from model.condition_scores import evaluate_conditions, make_wan_predictor, analyze_teacher_and_fake
+from model.fake_score_training import make_fake_score_batch, score_target_loss, flow_target_loss, sample_subset
 
 
 class DecompositionTests(unittest.TestCase):

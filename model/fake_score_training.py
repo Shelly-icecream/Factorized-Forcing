@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 import torch
 
-from .conditions import CONDITION_NAMES
+from utils.pab_conditions import CONDITION_NAMES
 
 
 @dataclass

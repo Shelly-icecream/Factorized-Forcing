@@ -1,6 +1,6 @@
 """CPU-only syntax-assisted parsing; the JSON vocabulary remains authoritative."""
 
-from .parser import CaptionParser
+from prompt_processing.parser import CaptionParser
 
 SPACY_PARSER_VERSION = "spacy_en_v1_multi_action"
 DEFAULT_SPACY_MODEL = "en_core_web_sm"
@@ -15,7 +15,7 @@ class SpacyCaptionParser(CaptionParser):
             self.nlp = spacy.load(model, exclude=["ner"])
         except (ImportError, OSError) as exc:
             raise RuntimeError(
-                "spaCy English pipeline is required. Install stage3/requirements-spacy.txt "
+                "spaCy English pipeline is required. Install prompt_processing/requirements-spacy.txt "
                 "and run: python -m spacy download en_core_web_sm"
             ) from exc
         self.model = model

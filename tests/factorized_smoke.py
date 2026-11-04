@@ -1,4 +1,4 @@
-"""Exercise the actual Stage 3 objectives and checkpoint code without Wan weights."""
+"""Exercise the actual Factorized DMD objectives and checkpoint code without Wan weights."""
 
 import json
 from pathlib import Path
@@ -7,10 +7,10 @@ from types import SimpleNamespace
 
 import torch
 
-from .checkpoint import save_checkpoint, load_checkpoint
-from .dataset import ParsedCaptionDataset, CaptionStream
-from .parser import CaptionParser
-from .training import Stage3Objective
+from utils.distillation_checkpoint import save_checkpoint, load_checkpoint
+from utils.pab_dataset import ParsedCaptionDataset, CaptionStream
+from prompt_processing.parser import CaptionParser
+from model.factorized_objective import FactorizedObjective
 
 
 class TinyScore(torch.nn.Module):
@@ -67,7 +67,7 @@ def run_smoke(use_fsdp=False):
             model.generator = FSDP(model.generator, device_id=0, use_orig_params=True)
             model.fake_score = FSDP(model.fake_score, device_id=0, use_orig_params=True)
             model.real_score = FSDP(model.real_score, device_id=0, use_orig_params=True)
-        objective = Stage3Objective(model, [1, 2, 1, 2, 2], microbatch=3)
+        objective = FactorizedObjective(model, [1, 2, 1, 2, 2], microbatch=3)
         generator_optimizer = torch.optim.AdamW(model.generator.parameters(), lr=0.01)
         fake_optimizer = torch.optim.AdamW(model.fake_score.parameters(), lr=0.01)
 

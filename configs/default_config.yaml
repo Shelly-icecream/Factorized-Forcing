@@ -10,15 +10,15 @@ gc_interval: 100
 context_noise: 0
 causal: true
 
-# Optional Stage 3 condition-score experiment. Disabled by default.
-stage3_enabled: false
-stage3_mode: baseline
-stage3_analysis_interval: 0
-stage3_microbatch: 1
-stage3_cfg_mode: baseline
-stage3_parser_version: rules_en_v2
-stage3_parser_rules: stage3/rules_en_v2.json
-stage3_records_dir: stage3_outputs
+# Optional factorized P/A/B objective in the standard score-distillation trainer.
+factorized_enabled: false
+factorized_microbatch: 1
+factorized_parser_version: spacy_en_v1_multi_action
+factorized_normalize: true
+factorized_activation_cpu_offload: false
+factorized_component_weights: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 1.0, PB: 1.0, AB: 1.0, PAB: 1.0}
+factorized_subset_probabilities: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 1.0, PB: 1.0, AB: 1.0, PAB: 1.0}
+resume: null
 
 ckpt_step: 0
 prompt_name: MovieGenVideoBench

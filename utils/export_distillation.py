@@ -1,4 +1,4 @@
-"""Gather Stage 3 generator shards on CPU and export inference weights."""
+"""Gather distillation generator shards on CPU and export inference weights."""
 
 import argparse
 from copy import deepcopy
@@ -198,7 +198,7 @@ def export_checkpoint(checkpoint, output, use_ema=False, keep_lora=False, dtype=
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export Stage 3 training shards to inference weights on CPU")
+    parser = argparse.ArgumentParser(description="Export distillation training shards to inference weights on CPU")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--use-ema", action="store_true")
@@ -206,7 +206,7 @@ def main():
     parser.add_argument("--dtype", choices=("bfloat16", "float32", "float16"), default="bfloat16")
     args = parser.parse_args()
     if "RANK" not in os.environ:
-        parser.error("launch with torchrun --standalone --nproc_per_node=<checkpoint world size> -m stage3.export")
+        parser.error("launch with torchrun --standalone --nproc_per_node=<checkpoint world size> -m utils.export_distillation")
     dist.init_process_group("gloo", timeout=timedelta(minutes=60))
     try:
         export_checkpoint(args.checkpoint, args.output, args.use_ema, args.keep_lora, getattr(torch, args.dtype))

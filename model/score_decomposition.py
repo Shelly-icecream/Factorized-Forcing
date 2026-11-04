@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 import torch
 
-from .conditions import CONDITION_INDICES, CONDITION_MASKS, CONDITION_NAMES, MASK_INDICES
+from utils.pab_conditions import CONDITION_INDICES, CONDITION_MASKS, CONDITION_NAMES, MASK_INDICES
 
 
 def decompose_conditions(outputs: torch.Tensor) -> dict[str, torch.Tensor]:

@@ -3,8 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from stage3.parser import parse_jsonl
-from stage3.spacy_parser import SpacyCaptionParser, SPACY_PARSER_VERSION
+from prompt_processing.parser import parse_jsonl
+from prompt_processing.spacy_parser import SpacyCaptionParser, SPACY_PARSER_VERSION
 
 
 class SpacyParserTests(unittest.TestCase):

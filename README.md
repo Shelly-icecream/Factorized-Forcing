@@ -1,10 +1,21 @@
+PAB 数据处理在 [`prompt_processing/`](prompt_processing/README.md)，词表为
+[`rules.json`](prompt_processing/rules.json)，解析结果与审计报告在 `prompts/processed/`。
+训练统一使用原有 `train.py` → `trainer/distillation.py`，配置为
+[`factorized_dmd_framewise.yaml`](configs/factorized_dmd_framewise.yaml)。
+
+```bash
+torchrun --standalone --nproc_per_node=6 train.py \
+  --config_path configs/factorized_dmd_framewise.yaml \
+  --logdir logs/factorized_dmd --disable-wandb --no_visualize
+```
+
 设 \(S\subseteq\{P,A,B\}\)，八种条件的 score 差异为：
 
 \
 d_S=s_{\mathrm{fake}}(x_t\mid c_S)-s_{\mathrm{real}}(x_t\mid c_S)
 \
 
-**① 分解与加权：`stage3_component_weights`**
+**① 分解与加权：`factorized_component_weights`**
 
 \[
 \Delta_S=\sum_{T\subseteq S}(-1)^{|S|-|T|}d_T,
@@ -29,7 +40,7 @@ g=\frac{\sigma^2}{(1-\sigma)Z}D,
 
 其中 \(x=G_\theta(z,c_{PAB})\)，\(Z\) 为归一化因子，MSE 仅计算选中位置。
 
-**③ 训练 fake：`stage3_subset_probabilities`**
+**③ 训练 fake：`factorized_subset_probabilities`**
 
 \[
 S\sim p_S=\frac{q_S}{\sum_Tq_T},

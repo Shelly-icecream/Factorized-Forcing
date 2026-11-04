@@ -1,63 +1,10 @@
 """Frozen-teacher/fake analysis adapter; model-specific rollout stays outside this module."""
 
 from collections.abc import Callable
-import hashlib
-import json
 import torch
 
-from .conditions import CONDITION_NAMES
-from .decomposition import decomposition_report
-
-
-class ConditionEncodingCache:
-    """In-memory cache keyed by model/tokenizer/parser versions and exact text."""
-
-    def __init__(self):
-        self._values: dict[str, dict] = {}
-
-    def key(
-        self,
-        condition: str,
-        model_version: str,
-        tokenizer_version: str,
-        parser_version: str,
-    ) -> str:
-        payload = json.dumps(
-            [model_version, tokenizer_version, parser_version, condition],
-            ensure_ascii=False,
-        ).encode("utf-8")
-        return hashlib.sha256(payload).hexdigest()
-
-    def get_or_encode(
-        self,
-        condition: str,
-        encode_one: Callable[[str], dict],
-        model_version: str,
-        tokenizer_version: str,
-        parser_version: str,
-    ) -> dict:
-        cache_key = self.key(condition, model_version, tokenizer_version, parser_version)
-        if cache_key not in self._values:
-            self._values[cache_key] = encode_one(condition)
-        return self._values[cache_key]
-
-
-def validate_tokenization(
-    conditions: dict[str, str],
-    tokenize: Callable[[str], object],
-    max_length: int,
-) -> dict[str, dict[str, object]]:
-    if max_length < 1:
-        raise ValueError("max_length must be positive")
-    report = {}
-    for name in CONDITION_NAMES:
-        tokenized = tokenize(conditions[name])
-        token_count = len(tokenized)
-        report[name] = {
-            "token_count": token_count,
-            "truncated": token_count > max_length,
-        }
-    return report
+from utils.pab_conditions import CONDITION_NAMES
+from model.score_decomposition import decomposition_report
 
 
 @torch.no_grad()
@@ -132,7 +79,7 @@ def make_wan_predictor(model, prediction_type="score", scheduler=None):
         flow, x0 = model(noisy_image_or_video=noisy, timestep=timestep,
                          conditional_dict=encoded)[:2]
         if prediction_type == "score":
-            from .prediction import linear_flow_velocity_to_score
+            from model.score_prediction import linear_flow_velocity_to_score
             times = scheduler.timesteps.to(device=timestep.device, dtype=torch.float64)
             indices = (times[:, None] - timestep.double().reshape(1, -1)).abs().argmin(dim=0)
             sigma = scheduler.sigmas.to(device=noisy.device, dtype=torch.float32)[indices]

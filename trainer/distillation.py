@@ -1,22 +1,30 @@
 import gc
 import logging
-from utils.dataset import cycle
-from utils.dataset import TextDataset
-from utils.distributed import EMA_FSDP, fsdp_wrap, fsdp_state_dict, launch_distributed_job
+from utils.distributed import EMA_FSDP, fsdp_state_dict, launch_distributed_job
 from utils.misc import set_seed
 import torch.distributed as dist
-from omegaconf import OmegaConf
-from model import DMD
 import torch
-import wandb
 import time
 import os
+import json
+from pathlib import Path
+from contextlib import nullcontext
 
 
 class Trainer:
     def __init__(self, config):
+        from omegaconf import OmegaConf
+        from model import DMD
+        import wandb
+        self.wandb = wandb
         self.config = config
         self.step = 0
+        self.factorized = getattr(config, "factorized_enabled", False)
+        if self.factorized:
+            from model.factorized_objective import validate_factorized_config
+            validate_factorized_config(config)
+        elif getattr(config, "resume", None):
+            raise ValueError("full optimizer resume currently requires factorized_enabled=true")
 
         # Step 1: Initialize the distributed training environment (rank, seed, dtype, logging etc.)
         torch.backends.cuda.matmul.allow_tf32 = True
@@ -25,6 +33,12 @@ class Trainer:
         launch_distributed_job()
         global_rank = dist.get_rank()
         self.world_size = dist.get_world_size()
+
+        if self.factorized and config.resume:
+            metadata = json.loads((Path(config.resume) / "metadata.json").read_text(encoding="utf-8"))
+            if metadata["world_size"] != self.world_size:
+                raise ValueError("resume requires the same world size")
+            config.seed = metadata["signature"]["seed"]
 
         self.dtype = torch.bfloat16 if config.mixed_precision else torch.float32
         self.device = torch.cuda.current_device()
@@ -41,8 +55,8 @@ class Trainer:
         set_seed(config.seed + global_rank)
 
         if self.is_main_process and not self.disable_wandb:
-            wandb.login(host=config.wandb_host, key=config.wandb_key)
-            wandb.init(
+            self.wandb.login(host=config.wandb_host, key=config.wandb_key)
+            self.wandb.init(
                 config=OmegaConf.to_container(config, resolve=True),
                 name=config.config_name,
                 mode="online",
@@ -62,7 +76,7 @@ class Trainer:
         else:
             raise ValueError("Invalid distribution matching loss")
 
-        if not config.no_visualize or config.load_raw_video:
+        if not self.factorized and (not config.no_visualize or config.load_raw_video):
             self.model.vae = self.model.vae.to(
                 device=self.device, dtype=torch.bfloat16 if config.mixed_precision else torch.float32)
 
@@ -85,20 +99,34 @@ class Trainer:
                 weight_decay=config.weight_decay
             )
 
-        # Step 3: Initialize the dataloader
-        dataset = TextDataset(config.data_path)
-        sampler = torch.utils.data.distributed.DistributedSampler(
-            dataset, shuffle=True, drop_last=True)
-        dataloader = torch.utils.data.DataLoader(
-            dataset,
-            batch_size=config.batch_size,
-            sampler=sampler,
-            num_workers=8)
-
-        if dist.get_rank() == 0:
-            print("DATASET SIZE %d" % len(dataset))
-        self.dataloader = cycle(dataloader)
-
+        # Step 3: Use parsed P/A/B data only when the optional objective is enabled.
+        if self.factorized:
+            from utils.pab_dataset import ParsedCaptionDataset, CaptionStream
+            from model.factorized_objective import FactorizedObjective
+            self.dataset = ParsedCaptionDataset(config.data_path, config.factorized_parser_version)
+            fingerprints = [None] * self.world_size
+            dist.all_gather_object(fingerprints, self.dataset.fingerprint)
+            if len(set(fingerprints)) != 1:
+                raise ValueError("all ranks must use the same parsed-caption dataset")
+            self.dataloader = CaptionStream(self.dataset, global_rank, self.world_size, config.seed)
+            self.factorized_objective = FactorizedObjective(
+                self.model, config.image_or_video_shape, config.factorized_microbatch,
+                dict(config.factorized_component_weights), config.factorized_normalize)
+            self.checkpoint_signature = OmegaConf.to_container(config, resolve=True)
+            for key in ("resume", "max_train_steps", "log_iters", "logdir", "config_name",
+                        "no_save", "no_visualize", "disable_wandb", "wandb_save_dir", "data_path"):
+                self.checkpoint_signature.pop(key, None)
+            self.checkpoint_signature["dataset_sha256"] = self.dataset.fingerprint
+        else:
+            from utils.dataset import cycle, TextDataset
+            self.dataset = TextDataset(config.data_path)
+            sampler = torch.utils.data.distributed.DistributedSampler(
+                self.dataset, shuffle=True, drop_last=True)
+            dataloader = torch.utils.data.DataLoader(
+                self.dataset, batch_size=config.batch_size, sampler=sampler, num_workers=8)
+            self.dataloader = cycle(dataloader)
+        if self.is_main_process:
+            print("DATASET SIZE %d" % len(self.dataset))
 
         # 6. Set up EMA parameter containers
         rename_param = (
@@ -115,13 +143,15 @@ class Trainer:
             self.name_to_trainable_params[renamed_n] = p
         ema_weight = config.ema_weight
         self.generator_ema = None
-        if (ema_weight is not None) and (ema_weight > 0.0):
+        if not self.factorized and (ema_weight is not None) and (ema_weight > 0.0):
             print(f"Setting up EMA with weight {ema_weight}")
             self.generator_ema = EMA_FSDP(self.model.generator, decay=ema_weight)
 
         ##############################################################################################################
         # 7. (If resuming) Load the model and optimizer, lr_scheduler, ema's statedicts
-        if getattr(config, "generator_ckpt", False):
+        if self.factorized and not config.resume and config.generator_ckpt:
+            self._load_factorized_generator(config.generator_ckpt)
+        elif not self.factorized and getattr(config, "generator_ckpt", False):
             print(f"Loading pretrained generator from {config.generator_ckpt}")
             state_dict = torch.load(config.generator_ckpt, map_location="cpu")
             z_state_dict = state_dict.get("z_normalization")
@@ -158,7 +188,82 @@ class Trainer:
         self.max_grad_norm_critic = getattr(config, "max_grad_norm_critic", 10.0)
         self.previous_time = None
 
+        if self.factorized:
+            # Initialize EMA after the pretrained generator weights are loaded.
+            self.generator_ema = (EMA_FSDP(self.model.generator, decay=config.ema_weight, trainable_only=True)
+                if config.ema_weight > 0 and self.step >= config.ema_start_step else None)
+            if config.resume:
+                from utils.distillation_checkpoint import load_checkpoint
+                self.step, ema = load_checkpoint(config.resume, self.model,
+                    self.generator_optimizer, self.critic_optimizer, self.dataloader,
+                    self.checkpoint_signature)
+                if ema is not None:
+                    self.generator_ema = EMA_FSDP(self.model.generator, decay=config.ema_weight, trainable_only=True)
+                    self.generator_ema.load_state_dict(ema)
+            if self.is_main_process:
+                (Path(self.output_path) / "config.json").write_text(
+                    json.dumps(OmegaConf.to_container(config, resolve=True), indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _clip(module, maximum):
+        if hasattr(module, "clip_grad_norm_"):
+            return module.clip_grad_norm_(maximum)
+        return torch.nn.utils.clip_grad_norm_(module.parameters(), maximum)
+
+    def _load_factorized_generator(self, path):
+        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP, StateDictType, FullStateDictConfig
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        weights = state.get("generator", state.get("generator_ema", state.get("model", state)))
+        weights = {name.replace("model._fsdp_wrapped_module.", "model.", 1): value
+                   for name, value in weights.items()}
+        with FSDP.state_dict_type(self.model.generator, StateDictType.FULL_STATE_DICT,
+                                  FullStateDictConfig(offload_to_cpu=True, rank0_only=False)):
+            result = self.model.generator.load_state_dict(weights, strict=False)
+        missing = [name for name in result.missing_keys if "lora" not in name.lower()]
+        if result.unexpected_keys or missing:
+            raise ValueError(f"incompatible generator checkpoint: missing={missing[:5]}, unexpected={result.unexpected_keys[:5]}")
+        if state.get("z_normalization") is not None:
+            self.model.load_z_normalization_state_dict(state["z_normalization"])
+
+    def _factorized_subset(self):
+        from utils.pab_conditions import CONDITION_NAMES
+        from model.fake_score_training import sample_subset
+        index = (CONDITION_NAMES.index(sample_subset(dict(self.config.factorized_subset_probabilities)))
+                 if self.is_main_process else 0)
+        value = torch.tensor([index], device=self.device)
+        dist.broadcast(value, src=0)
+        return CONDITION_NAMES[value.item()]
+
+    def _factorized_fwdbwd(self, batch, train_generator):
+        with (torch.autograd.graph.save_on_cpu(pin_memory=True)
+              if self.config.factorized_activation_cpu_offload else nullcontext()):
+            if train_generator:
+                loss, logs = self.factorized_objective.generator_loss(batch["conditions"])
+            else:
+                self.last_subset = self._factorized_subset()
+                loss, logs = self.factorized_objective.fake_loss(batch["conditions"], self.last_subset)
+        if not torch.isfinite(loss):
+            raise FloatingPointError("nonfinite factorized distillation loss")
+        loss.backward()
+        self.model.release_kv_cache()
+        module = self.model.generator if train_generator else self.model.fake_score
+        maximum = self.max_grad_norm_generator if train_generator else self.max_grad_norm_critic
+        grad_norm = self._clip(module, maximum)
+        if train_generator:
+            logs.update(generator_loss=loss.detach(), generator_grad_norm=grad_norm,
+                        dmdtrain_gradient_norm=logs["gradient_norm"])
+        else:
+            logs.update(critic_loss=loss.detach(), critic_grad_norm=grad_norm)
+        return logs
+
     def save(self):
+        if self.factorized:
+            from utils.distillation_checkpoint import save_checkpoint
+            save_checkpoint(Path(self.output_path) / f"checkpoint_{self.step:07d}",
+                self.model, self.generator_optimizer, self.critic_optimizer, self.dataloader,
+                self.step, self.checkpoint_signature,
+                self.generator_ema.state_dict() if self.generator_ema is not None else None)
+            return
         print("Start gathering distributed model states...")
 
         if self.config.ema_start_step < self.step:
@@ -202,6 +307,9 @@ class Trainer:
 
         if self.step % 20 == 0:
             torch.cuda.empty_cache()
+
+        if self.factorized:
+            return self._factorized_fwdbwd(batch, train_generator)
 
         # Step 1: Get the next batch of text prompts
         text_prompts = batch["prompts"]
@@ -252,8 +360,7 @@ class Trainer:
 
             generator_loss.backward()
             self.model.release_kv_cache()
-            generator_grad_norm = self.model.generator.clip_grad_norm_(
-                self.max_grad_norm_generator)
+            generator_grad_norm = self._clip(self.model.generator, self.max_grad_norm_generator)
 
             generator_log_dict.update({"generator_loss": generator_loss,
                                        "generator_grad_norm": generator_grad_norm})
@@ -273,8 +380,7 @@ class Trainer:
 
         critic_loss.backward()
         self.model.release_kv_cache()
-        critic_grad_norm = self.model.fake_score.clip_grad_norm_(
-            self.max_grad_norm_critic)
+        critic_grad_norm = self._clip(self.model.fake_score, self.max_grad_norm_critic)
 
         critic_log_dict.update({"critic_loss": critic_loss,
                                 "critic_grad_norm": critic_grad_norm})
@@ -285,7 +391,7 @@ class Trainer:
     def train(self):
         start_step = self.step
        
-        while True:
+        while getattr(self.config, "max_train_steps", -1) <= 0 or self.step < self.config.max_train_steps:
             TRAIN_GENERATOR = self.step % self.config.dfake_gen_update_ratio == 0
 
             # Train the generator
@@ -320,7 +426,7 @@ class Trainer:
             # Create EMA params (if not already created)
             if (self.step >= self.config.ema_start_step) and \
                     (self.generator_ema is None) and (self.config.ema_weight > 0):
-                self.generator_ema = EMA_FSDP(self.model.generator, decay=self.config.ema_weight)
+                self.generator_ema = EMA_FSDP(self.model.generator, decay=self.config.ema_weight, trainable_only=self.factorized)
 
             # Save the model
             if (not self.config.no_save) and (self.step - start_step) > 0 and self.step % self.config.log_iters == 0:
@@ -348,8 +454,16 @@ class Trainer:
                         }
                     )
 
+                if self.factorized:
+                    values = dict(generator_log_dict) if TRAIN_GENERATOR else {}
+                    values.update(critic_log_dict)
+                    metrics = {key: value.item() for key, value in values.items()
+                               if isinstance(value, torch.Tensor) and value.numel() == 1}
+                    metrics.update(step=self.step, subset=self.last_subset)
+                    with (Path(self.output_path) / "metrics.jsonl").open("a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(metrics) + "\n")
                 if not self.disable_wandb:
-                    wandb.log(wandb_loss_dict, step=self.step)
+                    self.wandb.log(wandb_loss_dict, step=self.step)
 
             if getattr(self.config, "max_train_steps", -1) > 0 and \
                     self.step >= self.config.max_train_steps:
@@ -367,7 +481,7 @@ class Trainer:
                     self.previous_time = current_time
                 else:
                     if not self.disable_wandb:
-                        wandb.log({"per iteration time": current_time - self.previous_time}, step=self.step)
+                        self.wandb.log({"per iteration time": current_time - self.previous_time}, step=self.step)
                     self.previous_time = current_time
 
         if (not self.config.no_save) and self.step > start_step and \

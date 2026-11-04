@@ -6,7 +6,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from .conditions import CONDITION_NAMES
+from utils.pab_conditions import CONDITION_NAMES
 
 
 class ParsedCaptionDataset:

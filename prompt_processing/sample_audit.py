@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import random
 
-from .parser import CaptionParser, _read_captions
+from prompt_processing.parser import CaptionParser, _read_captions
 from .spacy_parser import SpacyCaptionParser
 
 

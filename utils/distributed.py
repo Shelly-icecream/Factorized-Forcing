@@ -90,21 +90,24 @@ def launch_distributed_job(backend: str = "nccl"):
 
 
 class EMA_FSDP:
-    def __init__(self, fsdp_module: torch.nn.Module, decay: float = 0.999):
+    def __init__(self, fsdp_module: torch.nn.Module, decay: float = 0.999, trainable_only=False):
         self.decay = decay
+        self.trainable_only = trainable_only
         self.shadow = {}
         self._init_shadow(fsdp_module)
 
     @torch.no_grad()
     def _init_shadow(self, fsdp_module):
         for n, p in fsdp_module.named_parameters():
-            self.shadow[n] = p.detach().clone().float().cpu()
+            if not self.trainable_only or p.requires_grad:
+                self.shadow[n] = p.detach().clone().float().cpu()
 
     @torch.no_grad()
     def update(self, fsdp_module):
         d = self.decay
         for n, p in fsdp_module.named_parameters():
-            self.shadow[n].mul_(d).add_(p.detach().float().cpu(), alpha=1. - d)
+            if n in self.shadow:
+                self.shadow[n].mul_(d).add_(p.detach().float().cpu(), alpha=1. - d)
 
     # Optional helpers ---------------------------------------------------
     def state_dict(self):

@@ -1,4 +1,4 @@
-"""Conservative, offline English caption parsing for Stage 3 experiments."""
+"""Conservative, offline English caption parsing for P/A/B factorization."""
 
 from dataclasses import asdict, dataclass
 import json
@@ -82,7 +82,7 @@ class CaptionParser:
 
     @staticmethod
     def _default_rules():
-        with (Path(__file__).with_name("rules_en_v2.json")).open(encoding="utf-8") as handle:
+        with (Path(__file__).with_name("rules.json")).open(encoding="utf-8") as handle:
             return json.load(handle)
 
     def parse(self, caption: str) -> ParseResult:
@@ -123,7 +123,7 @@ class CaptionParser:
 
         spans.sort(key=lambda item: item.start)
         remaining = self._complement(caption, spans)
-        from .conditions import build_conditions
+        from utils.pab_conditions import build_conditions
         conditions = build_conditions(caption, spans, remaining)
         leakage = self._leakage_warning(remaining)
         fields = {field: " ".join(span.text for span in spans if span.field == field)
@@ -515,7 +515,7 @@ class CaptionParser:
         return re.sub(r"\s+", " ", text).strip(" ,;:")
 
     def _failed(self, caption, reason, spans):
-        from .conditions import build_conditions
+        from utils.pab_conditions import build_conditions
         fields = {}
         for field in ("person", "action", "background"):
             values = [span.text for span in spans if span.field == field]
