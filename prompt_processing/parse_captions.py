@@ -18,12 +18,15 @@ def main():
     cli.add_argument("--input-format", choices=("auto", "jsonl", "text"), default="auto")
     cli.add_argument("--workers", type=int, default=1)
     cli.add_argument("--chunksize", type=int, default=128)
+    mode = cli.add_mutually_exclusive_group()
+    mode.add_argument("--resume", action="store_true", help="Resume existing output (the default)")
+    mode.add_argument("--overwrite", action="store_true", help="Discard existing output and parse from the start")
     args = cli.parse_args()
     if args.workers < 1 or args.chunksize < 1:
         cli.error("--workers and --chunksize must be positive integers")
     parser = make_parser(args.backend, args.rules, args.parser_version, args.spacy_model)
     counts = parse_jsonl(args.input, args.output, parser, args.input_format,
-                         args.workers, args.chunksize)
+                         args.workers, args.chunksize, resume=not args.overwrite)
     print(json.dumps(counts))
 
 

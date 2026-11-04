@@ -22,6 +22,23 @@ python -m prompt_processing.check_data \
   --parser-version spacy_en_v1_multi_action
 ```
 
+Parsing resumes existing output by default (`--resume` is an explicit alias).
+Stop the previous writer before restarting the same command, for example:
+
+```bash
+python -m prompt_processing.parse_captions \
+  prompts/vidprom_filtered_extended.txt prompts/processed/results.jsonl \
+  --input-format text --workers 4 --resume
+```
+
+The existing rows must match the input prefix and parser version. Both successful
+and rejected results count as completed rows. A truncated final JSON/UTF-8 line
+is removed and that caption is parsed again; a complete row missing only its
+newline is preserved. Corrupt complete lines or mismatched data fail without
+changing the output. Reported counts include old and new rows. Use `--overwrite`
+only to deliberately discard existing output. Linux writers using this version
+lock the output against concurrent writers; stop older versions explicitly.
+
 `--rules path/to/rules.json` supplies a different vocabulary. The default path
 is resolved relative to the parser module. The spaCy backend uses the local
 `en_core_web_sm` pipeline; no LLM or API is used during parsing. Each worker

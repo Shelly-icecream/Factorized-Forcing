@@ -529,11 +529,12 @@ class CaptionParser:
         )
 
 
-def parse_jsonl(input_path, output_path, parser, input_format="auto", workers=1, chunksize=128):
+def parse_jsonl(input_path, output_path, parser, input_format="auto", workers=1, chunksize=128, resume=True):
     """Stream captions, optionally using CPU workers with bounded batches.
 
     Call from an ``if __name__ == "__main__"`` guard when workers > 1.
-    Output order is identical to input order.
+    Output order is identical to input order. Existing output is validated and
+    resumed by default. Counts include both existing and newly written rows.
     """
     if workers < 1 or chunksize < 1:
         raise ValueError("workers and chunksize must be positive integers")
@@ -542,8 +543,19 @@ def parse_jsonl(input_path, output_path, parser, input_format="auto", workers=1,
         raise ValueError("input_format must be one of: auto, jsonl, text")
     output_parent = __import__("pathlib").Path(output_path).parent
     output_parent.mkdir(parents=True, exist_ok=True)
-    with open(input_path, encoding="utf-8") as source, open(output_path, "w", encoding="utf-8") as target:
+    if Path(input_path).resolve() == Path(output_path).resolve():
+        raise ValueError("input and output must be different files")
+    from .resume import resume_output
+    with open(input_path, encoding="utf-8") as source, resume_output(output_path) as target:
         captions = _read_captions(source, input_format)
+        if resume:
+            from .resume import validate_prefix
+            counts.update(validate_prefix(target, captions, parser.parser_version))
+        else:
+            target.seek(0)
+            target.truncate()
+        from .resume import JsonlTextWriter
+        target = JsonlTextWriter(target)
         if workers == 1:
             results = (parser.parse(caption).to_dict() for caption in captions)
             _write_results(results, target, counts)
@@ -584,6 +596,7 @@ def _write_results(results, target, counts):
     for result in results:
         counts[result["parse_status"]] += 1
         target.write(json.dumps(result, ensure_ascii=False) + "\n")
+        target.flush()
 
 
 def _init_worker(rules, parser_version, model=None):
@@ -608,7 +621,8 @@ if __name__ == "__main__":
     cli.add_argument("--input-format", choices=("auto", "jsonl", "text"), default="auto")
     cli.add_argument("--workers", type=int, default=1)
     cli.add_argument("--chunksize", type=int, default=128)
+    cli.add_argument("--overwrite", action="store_true")
     args = cli.parse_args()
     parser = CaptionParser.from_json(args.rules) if args.rules else CaptionParser()
     print(json.dumps(parse_jsonl(args.input, args.output, parser,
-                                 args.input_format, args.workers, args.chunksize)))
+                                 args.input_format, args.workers, args.chunksize, resume=not args.overwrite)))
