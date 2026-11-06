@@ -10,6 +10,15 @@ gc_interval: 100
 context_noise: 0
 causal: true
 
+# Optional factorized P/A/B objective in the standard score-distillation trainer.
+factorized_enabled: false
+factorized_microbatch: 1
+factorized_parser_version: spacy_en_v1_multi_action
+factorized_normalize: true
+factorized_activation_cpu_offload: false
+factorized_component_weights: {empty: 1.0, P: 1.0, B: 1.0, A: 1.0, PAB: 1.0}
+resume: null
+
 ckpt_step: 0
 prompt_name: MovieGenVideoBench
 prompt_path: prompts/MovieGenVideoBench.txt

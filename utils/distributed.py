@@ -20,7 +20,7 @@ def fsdp_state_dict(model):
     return checkpoint
 
 
-def fsdp_wrap(module, sharding_strategy="full", mixed_precision=False, wrap_strategy="size", min_num_params=int(5e7), transformer_module=None, cpu_offload=False):
+def fsdp_wrap(module, sharding_strategy="full", mixed_precision=False, wrap_strategy="size", min_num_params=int(1e7), transformer_module=None, cpu_offload=False):
     if mixed_precision:
         mixed_precision_policy = MixedPrecision(
             param_dtype=torch.bfloat16,
@@ -60,6 +60,7 @@ def fsdp_wrap(module, sharding_strategy="full", mixed_precision=False, wrap_stra
         mixed_precision=mixed_precision_policy,
         device_id=torch.cuda.current_device(),
         limit_all_gathers=True,
+        backward_prefetch=None,
         use_orig_params=True,
         cpu_offload=CPUOffload(offload_params=cpu_offload),
         sync_module_states=False  # Load ckpt on rank 0 and sync to other ranks
@@ -89,21 +90,24 @@ def launch_distributed_job(backend: str = "nccl"):
 
 
 class EMA_FSDP:
-    def __init__(self, fsdp_module: torch.nn.Module, decay: float = 0.999):
+    def __init__(self, fsdp_module: torch.nn.Module, decay: float = 0.999, trainable_only=False):
         self.decay = decay
+        self.trainable_only = trainable_only
         self.shadow = {}
         self._init_shadow(fsdp_module)
 
     @torch.no_grad()
     def _init_shadow(self, fsdp_module):
-        for n, p in fsdp_module.module.named_parameters():
-            self.shadow[n] = p.detach().clone().float().cpu()
+        for n, p in fsdp_module.named_parameters():
+            if not self.trainable_only or p.requires_grad:
+                self.shadow[n] = p.detach().clone().float().cpu()
 
     @torch.no_grad()
     def update(self, fsdp_module):
         d = self.decay
-        for n, p in fsdp_module.module.named_parameters():
-            self.shadow[n].mul_(d).add_(p.detach().float().cpu(), alpha=1. - d)
+        for n, p in fsdp_module.named_parameters():
+            if n in self.shadow:
+                self.shadow[n].mul_(d).add_(p.detach().float().cpu(), alpha=1. - d)
 
     # Optional helpers ---------------------------------------------------
     def state_dict(self):
@@ -113,16 +117,16 @@ class EMA_FSDP:
         self.shadow = {k: v.clone() for k, v in sd.items()}
 
     def copy_to(self, fsdp_module):
-        for n, p in fsdp_module.module.named_parameters():
+        for n, p in fsdp_module.named_parameters():
             if n in self.shadow:
                 p.data.copy_(self.shadow[n].to(dtype=p.dtype, device=p.device))
 
     @torch.no_grad()
     def full_state_dict(self, fsdp_module):
         live_state = {}
-        for n, p in fsdp_module.module.named_parameters():
+        for n, p in fsdp_module.named_parameters():
             live_state[n] = p.detach().clone()
-        for n, p in fsdp_module.module.named_parameters():
+        for n, p in fsdp_module.named_parameters():
             if n in self.shadow:
                 p.data.copy_(self.shadow[n].to(dtype=p.dtype, device=p.device))
 
@@ -134,7 +138,13 @@ class EMA_FSDP:
                 k = k.replace("model._fsdp_wrapped_module.", "model.", 1)
             if k in checkpoint:
                 shadow_checkpoint[n] = checkpoint[k]
-        for n, p in fsdp_module.module.named_parameters():
+        if len(shadow_checkpoint) < len(self.shadow):
+            raise RuntimeError(
+                f"EMA checkpoint is incomplete: matched "
+                f"{len(shadow_checkpoint)} of {len(self.shadow)} parameters"
+            )
+
+        for n, p in fsdp_module.named_parameters():
             if n in live_state:
                 p.data.copy_(live_state[n].to(dtype=p.dtype, device=p.device))
 

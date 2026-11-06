@@ -38,21 +38,81 @@ class BaseModel(nn.Module):
             self.denoising_step_list_first_chunk = None
 
     def _initialize_models(self, args, device):
+        if getattr(args, "staged_fsdp_init", False):
+            self._initialize_models_staged(args, device)
+            return
+
         
         self.real_model_name = getattr(args, "real_name", "Wan2.1-T2V-1.3B")
         self.fake_model_name = getattr(args, "fake_name", "Wan2.1-T2V-1.3B")
         self.iscausal = getattr(args, "causal", True)
         self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=self.iscausal)
-        self.generator.model.requires_grad_(True)
+        self.generator.set_trainable()
 
         self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, is_causal=False)
         self.real_score.model.requires_grad_(False)
 
         self.fake_score = WanDiffusionWrapper(model_name=self.fake_model_name, is_causal=False)
-        self.fake_score.model.requires_grad_(True)
+        self.fake_score.model.requires_grad_(getattr(args, "train_fake_score", True))
 
         self.text_encoder = WanTextEncoder()
         self.text_encoder.requires_grad_(False)
+
+        self.vae = WanVAEWrapper()
+        self.vae.requires_grad_(False)
+
+        self.scheduler = self.generator.get_scheduler()
+        self.scheduler.timesteps = self.scheduler.timesteps.to(device)
+
+    def _initialize_models_staged(self, args, device):
+        from utils.distributed import fsdp_wrap
+
+        self.real_model_name = getattr(args, "real_name", "Wan2.1-T2V-1.3B")
+        self.fake_model_name = getattr(args, "fake_name", "Wan2.1-T2V-1.3B")
+        self.iscausal = getattr(args, "causal", True)
+
+        self.generator = WanDiffusionWrapper(
+            **getattr(args, "model_kwargs", {}), is_causal=self.iscausal)
+        self.generator.set_trainable()
+        self.generator = fsdp_wrap(
+            self.generator,
+            sharding_strategy=args.sharding_strategy,
+            mixed_precision=args.mixed_precision,
+            wrap_strategy=args.generator_fsdp_wrap_strategy,
+            cpu_offload=getattr(args, "generator_cpu_offload", False),
+        )
+
+        self.real_score = WanDiffusionWrapper(
+            model_name=self.real_model_name, is_causal=False)
+        self.real_score.model.requires_grad_(False)
+        self.real_score = fsdp_wrap(
+            self.real_score,
+            sharding_strategy=args.sharding_strategy,
+            mixed_precision=args.mixed_precision,
+            wrap_strategy=args.real_score_fsdp_wrap_strategy,
+            cpu_offload=getattr(args, "real_score_cpu_offload", False),
+        )
+
+        self.fake_score = WanDiffusionWrapper(
+            model_name=self.fake_model_name, is_causal=False)
+        self.fake_score.model.requires_grad_(getattr(args, "train_fake_score", True))
+        self.fake_score = fsdp_wrap(
+            self.fake_score,
+            sharding_strategy=args.sharding_strategy,
+            mixed_precision=args.mixed_precision,
+            wrap_strategy=args.fake_score_fsdp_wrap_strategy,
+            cpu_offload=getattr(args, "fake_score_cpu_offload", False),
+        )
+
+        self.text_encoder = WanTextEncoder()
+        self.text_encoder.requires_grad_(False)
+        self.text_encoder = fsdp_wrap(
+            self.text_encoder,
+            sharding_strategy=args.sharding_strategy,
+            mixed_precision=args.mixed_precision,
+            wrap_strategy=args.text_encoder_fsdp_wrap_strategy,
+            cpu_offload=getattr(args, "text_encoder_cpu_offload", False),
+        )
 
         self.vae = WanVAEWrapper()
         self.vae.requires_grad_(False)
@@ -144,12 +204,13 @@ class SelfForcingModel(BaseModel):
         else:
             noise_shape = image_or_video_shape.copy()
 
-        # During training, the number of generated frames should be uniformly sampled from
-        # [21, self.num_training_frames], but still being a multiple of self.num_frame_per_block
-        min_num_frames = 20 if self.args.independent_first_frame else 21
-        max_num_frames = self.num_training_frames - 1 if self.args.independent_first_frame else self.num_training_frames
-        assert max_num_frames % self.num_frame_per_block == 0
-        assert min_num_frames % self.num_frame_per_block == 0
+        # During training, sample a block-aligned length up to num_training_frames.
+        # The original 21-frame lower bound must shrink for shorter-memory configs.
+        num_frames_without_first = self.num_training_frames - int(self.args.independent_first_frame)
+        min_num_frames = min(20 if self.args.independent_first_frame else 21, num_frames_without_first)
+        min_num_frames = (min_num_frames // self.num_frame_per_block) * self.num_frame_per_block
+        max_num_frames = (num_frames_without_first // self.num_frame_per_block) * self.num_frame_per_block
+        assert max_num_frames >= self.num_frame_per_block
         max_num_blocks = max_num_frames // self.num_frame_per_block
         min_num_blocks = min_num_frames // self.num_frame_per_block
         num_generated_blocks = torch.randint(min_num_blocks, max_num_blocks + 1, (1,), device=self.device)
@@ -163,7 +224,7 @@ class SelfForcingModel(BaseModel):
         noise_shape[1] = num_generated_frames
         
         clean_image_or_video = None
-        if clean_latent:
+        if clean_latent is not None:
             clean_image_or_video = clean_latent.to(self.dtype)
             clean_image_or_video = clean_image_or_video.to(self.device)
             assert clean_image_or_video.shape == tuple(noise_shape), f"{clean_image_or_video.shape} != {tuple(noise_shape)}"
@@ -244,6 +305,10 @@ class SelfForcingModel(BaseModel):
             num_max_frames=self.num_training_frames,
             context_noise=self.args.context_noise
         )
+
+    def release_kv_cache(self):
+        if self.inference_pipeline is not None:
+            self.inference_pipeline.release_kv_cache()
         
 
 
@@ -284,10 +349,11 @@ class TeacherForcingModel(BaseModel):
 
         # During training, the number of generated frames should be uniformly sampled from
         # [21, self.num_training_frames], but still being a multiple of self.num_frame_per_block
-        min_num_frames = 20 if self.args.independent_first_frame else 21
-        max_num_frames = self.num_training_frames - 1 if self.args.independent_first_frame else self.num_training_frames
-        assert max_num_frames % self.num_frame_per_block == 0
-        assert min_num_frames % self.num_frame_per_block == 0
+        num_frames_without_first = self.num_training_frames - int(self.args.independent_first_frame)
+        min_num_frames = min(20 if self.args.independent_first_frame else 21, num_frames_without_first)
+        min_num_frames = (min_num_frames // self.num_frame_per_block) * self.num_frame_per_block
+        max_num_frames = (num_frames_without_first // self.num_frame_per_block) * self.num_frame_per_block
+        assert max_num_frames >= self.num_frame_per_block
         max_num_blocks = max_num_frames // self.num_frame_per_block
         min_num_blocks = min_num_frames // self.num_frame_per_block
         num_generated_blocks = torch.randint(min_num_blocks, max_num_blocks + 1, (1,), device=self.device)
@@ -424,10 +490,11 @@ class BidirectionalModel(BaseModel):
 
         # During training, the number of generated frames should be uniformly sampled from
         # [21, self.num_training_frames], but still being a multiple of self.num_frame_per_block
-        min_num_frames = 20 if self.args.independent_first_frame else 21
-        max_num_frames = self.num_training_frames - 1 if self.args.independent_first_frame else self.num_training_frames
-        assert max_num_frames % self.num_frame_per_block == 0
-        assert min_num_frames % self.num_frame_per_block == 0
+        num_frames_without_first = self.num_training_frames - int(self.args.independent_first_frame)
+        min_num_frames = min(20 if self.args.independent_first_frame else 21, num_frames_without_first)
+        min_num_frames = (min_num_frames // self.num_frame_per_block) * self.num_frame_per_block
+        max_num_frames = (num_frames_without_first // self.num_frame_per_block) * self.num_frame_per_block
+        assert max_num_frames >= self.num_frame_per_block
         max_num_blocks = max_num_frames // self.num_frame_per_block
         min_num_blocks = min_num_frames // self.num_frame_per_block
         num_generated_blocks = torch.randint(min_num_blocks, max_num_blocks + 1, (1,), device=self.device)

@@ -34,7 +34,7 @@ checkpoints/
 output/
 dataset/
 logs/
-stage3_outputs/
+prompts/processed/
 
 # Local Hugging Face and prompt cache
 .cache/
