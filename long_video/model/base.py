@@ -28,7 +28,7 @@ class BaseModel(nn.Module):
         self.fake_model_name = getattr(args, "fake_name", "Wan2.1-T2V-1.3B")
 
         self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=True)
-        self.generator.set_trainable()
+        self.generator.model.requires_grad_(True)
 
         self.real_score = WanDiffusionWrapper(model_name=self.real_model_name, is_causal=False)
         self.real_score.model.requires_grad_(False)
@@ -130,11 +130,10 @@ class RollingForcingModel(BaseModel):
 
         # During training, the number of generated frames should be uniformly sampled from
         # [21, self.num_training_frames], but still being a multiple of self.num_frame_per_block
-        num_frames_without_first = self.num_training_frames - int(self.args.independent_first_frame)
-        min_num_frames = min(20 if self.args.independent_first_frame else 21, num_frames_without_first)
-        min_num_frames = (min_num_frames // self.num_frame_per_block) * self.num_frame_per_block
-        max_num_frames = (num_frames_without_first // self.num_frame_per_block) * self.num_frame_per_block
-        assert max_num_frames >= self.num_frame_per_block
+        min_num_frames = 20 if self.args.independent_first_frame else 21
+        max_num_frames = self.num_training_frames - 1 if self.args.independent_first_frame else self.num_training_frames
+        assert max_num_frames % self.num_frame_per_block == 0
+        assert min_num_frames % self.num_frame_per_block == 0
         max_num_blocks = max_num_frames // self.num_frame_per_block
         min_num_blocks = min_num_frames // self.num_frame_per_block
         num_generated_blocks = torch.randint(min_num_blocks, max_num_blocks + 1, (1,), device=self.device)
@@ -229,7 +228,3 @@ class RollingForcingModel(BaseModel):
             num_max_frames=self.num_training_frames,
             context_noise=self.args.context_noise
         )
-
-    def release_kv_cache(self):
-        if self.inference_pipeline is not None:
-            self.inference_pipeline.release_kv_cache()

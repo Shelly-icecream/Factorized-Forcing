@@ -45,16 +45,10 @@ image_or_video_shape:
 - 60
 - 104
 distribution_loss: dmd
-max_train_steps: 10000
-z_normalization_mode: per_sample # per_sample or timestep_ema
-z_ema_decay: 0.99
-z_ema_eps: 1.0e-6
 trainer: score_distillation
 gradient_checkpointing: true
 num_frame_per_block: 1
 load_raw_video: false
 model_kwargs:
   timestep_shift: 5.0
-  lora_rank: 8
-  lora_alpha: 8
 data_path: prompts/vidprom_filtered_extended.txt

@@ -121,7 +121,7 @@ class Trainer:
                     fixed[k] = v
                 state_dict = fixed
             self.model.generator.load_state_dict(
-                state_dict, strict=not bool(getattr(self.model.generator, "lora_rank", 0))
+                state_dict, strict=True
             )
 
         ##############################################################################################################
@@ -196,7 +196,6 @@ class Trainer:
 
         self.generator_optimizer.zero_grad()
         (generator_loss * loss_scale).backward()
-        self.model.release_kv_cache()
         generator_grad_norm = self.model.generator.clip_grad_norm_(
             self.max_grad_norm)
         self.generator_optimizer.step()

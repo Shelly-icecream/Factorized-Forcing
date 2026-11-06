@@ -17,7 +17,6 @@ class DMD(SelfForcingModel):
         self.num_frame_per_block = getattr(args, "num_frame_per_block", 1)
         self.same_step_across_blocks = getattr(args, "same_step_across_blocks", True)
         self.num_training_frames = getattr(args, "num_training_frames", 21)
-        self.teacher_forcing = getattr(args, "teacher_forcing", False)
 
         if self.num_frame_per_block > 1:
             self.generator.model.num_frame_per_block = self.num_frame_per_block
@@ -46,92 +45,11 @@ class DMD(SelfForcingModel):
         self.ts_schedule = getattr(args, "ts_schedule", True)
         self.ts_schedule_max = getattr(args, "ts_schedule_max", False)
         self.min_score_timestep = getattr(args, "min_score_timestep", 0)
-        self.z_normalization_mode = getattr(args, "z_normalization_mode", "per_sample")
-        if self.z_normalization_mode not in {"per_sample", "timestep_ema"}:
-            raise ValueError(
-                "z_normalization_mode must be 'per_sample' or 'timestep_ema'"
-            )
-        self.z_ema_decay = getattr(args, "z_ema_decay", 0.99)
-        self.z_ema_eps = getattr(args, "z_ema_eps", 1e-6)
-        self.register_buffer(
-            "z_ema", torch.ones(self.num_train_timestep + 1, device=device)
-        )
-        self.register_buffer(
-            "z_count", torch.zeros(self.num_train_timestep + 1, device=device)
-        )
-        self.register_buffer("z_global_ema", torch.ones(1, device=device))
-        self.register_buffer("z_global_count", torch.zeros(1, device=device))
 
         if getattr(self.scheduler, "alphas_cumprod", None) is not None:
             self.scheduler.alphas_cumprod = self.scheduler.alphas_cumprod.to(device)
         else:
             self.scheduler.alphas_cumprod = None
-
-    @torch.no_grad()
-    def _update_timestep_z(self, z_current: torch.Tensor, timestep: torch.Tensor):
-        """Update detached running Z statistics for the observed timesteps."""
-        timestep = timestep.long().clamp_(0, self.num_train_timestep)
-        values = z_current.detach().float().reshape(-1)
-        timestep = timestep.reshape(-1)
-
-        sums = torch.zeros_like(self.z_ema)
-        counts = torch.zeros_like(self.z_count)
-        sums.scatter_add_(0, timestep, values)
-        counts.scatter_add_(0, timestep, torch.ones_like(values))
-
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            torch.distributed.all_reduce(sums)
-            torch.distributed.all_reduce(counts)
-
-        observed = counts > 0
-        batch_mean = sums / counts.clamp_min(1.0)
-        self.z_ema[observed] = (
-            self.z_ema_decay * self.z_ema[observed]
-            + (1.0 - self.z_ema_decay) * batch_mean[observed]
-        )
-        self.z_count.add_(counts)
-
-        total_count = counts.sum()
-        if total_count > 0:
-            global_mean = sums.sum() / total_count
-            self.z_global_ema.mul_(self.z_ema_decay).add_(
-                global_mean * (1.0 - self.z_ema_decay)
-            )
-            self.z_global_count.add_(total_count)
-
-    @torch.no_grad()
-    def _get_z_normalizer(
-        self, z_current: torch.Tensor, timestep: torch.Tensor
-    ) -> torch.Tensor:
-        if self.z_normalization_mode == "per_sample":
-            return z_current.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-
-        timestep = timestep.long().clamp(0, self.num_train_timestep)
-        normalizer = self.z_ema[timestep]
-        unseen = self.z_count[timestep] == 0
-        fallback = self.z_global_ema if self.z_global_count > 0 else z_current
-        normalizer = torch.where(unseen, fallback, normalizer)
-        normalizer = normalizer.clamp_min(self.z_ema_eps)
-        return normalizer.unsqueeze(-1).unsqueeze(-1).unsqueeze(-1)
-
-    @torch.no_grad()
-    def z_normalization_state_dict(self):
-        return {
-            "mode": self.z_normalization_mode,
-            "z_ema": self.z_ema.detach().cpu(),
-            "z_count": self.z_count.detach().cpu(),
-            "z_global_ema": self.z_global_ema.detach().cpu(),
-            "z_global_count": self.z_global_count.detach().cpu(),
-        }
-
-    @torch.no_grad()
-    def load_z_normalization_state_dict(self, state_dict):
-        if state_dict.get("mode", self.z_normalization_mode) != self.z_normalization_mode:
-            raise ValueError("Checkpoint Z normalization mode does not match config")
-        self.z_ema.copy_(state_dict["z_ema"].to(self.z_ema))
-        self.z_count.copy_(state_dict["z_count"].to(self.z_count))
-        self.z_global_ema.copy_(state_dict["z_global_ema"].to(self.z_global_ema))
-        self.z_global_count.copy_(state_dict["z_global_count"].to(self.z_global_count))
         
 
 
@@ -200,15 +118,8 @@ class DMD(SelfForcingModel):
         if normalization:
             # Step 4: Gradient normalization (DMD paper eq. 8).
             p_real = (estimated_clean_image_or_video - pred_real_image)
-            z_per_frame = torch.abs(p_real).mean(dim=[2, 3, 4])
-            if self.z_normalization_mode == "per_sample":
-                z_current = z_per_frame.mean(dim=1, keepdim=True)
-            else:
-                z_current = z_per_frame
-            normalizer = self._get_z_normalizer(z_current, timestep)
+            normalizer = torch.abs(p_real).mean(dim=[1, 2, 3, 4], keepdim=True)
             grad = grad / normalizer
-            if self.z_normalization_mode == "timestep_ema":
-                self._update_timestep_z(z_per_frame, timestep)
         grad = torch.nan_to_num(grad)
 
         return grad, {
@@ -276,14 +187,13 @@ class DMD(SelfForcingModel):
                 unconditional_dict=unconditional_dict
             )
 
-        target = (original_latent - grad).detach().float()
         if gradient_mask is not None:
             # Useless if we set always 21 latent frames
-            pred = original_latent[gradient_mask].float()
-            target = target[gradient_mask]
+            dmd_loss = 0.5 * F.mse_loss(original_latent.double(
+            )[gradient_mask], (original_latent.double() - grad.double()).detach()[gradient_mask], reduction="mean")
         else:
-            pred = original_latent.float()
-        dmd_loss = 0.5 * F.mse_loss(pred, target, reduction="mean")
+            dmd_loss = 0.5 * F.mse_loss(original_latent.double(
+            ), (original_latent.double() - grad.double()).detach(), reduction="mean")
         return dmd_loss, dmd_log_dict
 
     def generator_loss(

@@ -34,7 +34,7 @@ class CausalDiffusion(BaseModel):
 
     def _initialize_models(self, args, device):
         self.generator = WanDiffusionWrapper(**getattr(args, "model_kwargs", {}), is_causal=True)
-        self.generator.set_trainable()
+        self.generator.model.requires_grad_(True)
 
         self.text_encoder = WanTextEncoder()
         self.text_encoder.requires_grad_(False)

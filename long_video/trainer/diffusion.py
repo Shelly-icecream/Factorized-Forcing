@@ -207,7 +207,6 @@ class Trainer:
         )
         self.generator_optimizer.zero_grad()
         generator_loss.backward()
-        self.model.release_kv_cache()
         generator_grad_norm = self.model.generator.clip_grad_norm_(
             self.max_grad_norm)
         self.generator_optimizer.step()

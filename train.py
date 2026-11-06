@@ -32,10 +32,7 @@ def main():
     config.wandb_save_dir = args.wandb_save_dir
     config.disable_wandb = args.disable_wandb
 
-    if config.trainer == "stage3":
-        from stage3.trainer import Trainer as Stage3Trainer
-        trainer = Stage3Trainer(config)
-    elif config.trainer == "diffusion":
+    if config.trainer == "diffusion":
         trainer = DiffusionTrainer(config)
     elif config.trainer == "ode":
         trainer = ODETrainer(config)
