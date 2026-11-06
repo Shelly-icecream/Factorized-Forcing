@@ -2,11 +2,11 @@ trainer: score_distillation
 factorized_enabled: true
 data_path: factorized_outputs/vidprom_filtered_extended.parsed.spacy.jsonl
 factorized_parser_version: spacy_en_v1_multi_action
-generator_ckpt: checkpoints/framewise/causal_forcing.pt
+generator_ckpt: checkpoints/framewise/causal_ode.pt # Or checkpoints/framewise/causal_cd.pt, as in upstream.
 resume: null
 logdir: factorized_outputs/training
 
-real_name: Wan2.1-T2V-1.3B
+real_name: Wan2.1-T2V-14B
 fake_name: Wan2.1-T2V-1.3B
 staged_fsdp_init: true
 # Single-node 8-GPU FSDP: shard parameters, gradients and optimizer states.
@@ -25,6 +25,7 @@ mixed_precision: true
 gradient_checkpointing: true
 factorized_activation_cpu_offload: false
 model_kwargs:
+  model_name: Wan2.1-T2V-1.3B
   timestep_shift: 5.0
   lora_rank: 0  # Full-parameter generator training, as in Causal-Forcing.
 
@@ -37,8 +38,8 @@ guidance_scale: 0.0
 denoising_loss_type: flow
 distribution_loss: dmd
 num_frame_per_block: 1
-num_training_frames: 12
-image_or_video_shape: [1, 12, 16, 60, 104]
+num_training_frames: 21
+image_or_video_shape: [1, 21, 16, 60, 104]
 batch_size: 1
 load_raw_video: false
 
