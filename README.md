@@ -4,10 +4,25 @@ PAB 数据处理在 [`prompt_processing/`](prompt_processing/README.md)，词表
 [`factorized_dmd_framewise.yaml`](configs/factorized_dmd_framewise.yaml)。
 
 ```bash
-torchrun --standalone --nproc_per_node=6 train.py \
+torchrun --standalone --nnodes=1 --nproc_per_node=8 train.py \
   --config_path configs/factorized_dmd_framewise.yaml \
   --logdir logs/factorized_dmd --disable-wandb --no_visualize
 ```
+
+也可运行 `bash scripts/train_factorized_a100.sh`（单机 8 张 A100）。
+参照 [Causal-Forcing 的训练配置](https://github.com/thu-ml/Causal-Forcing/blob/main/configs/causal_forcing_dmd_framewise.yaml)
+和 [FSDP 训练实现](https://github.com/thu-ml/Causal-Forcing/blob/main/trainer/distillation.py)，
+generator 恢复全参数训练（`lora_rank: 0`），generator、real/fake score 和
+text encoder 均关闭参数 CPU offload，保留 BF16、gradient checkpointing 和逐模型 FSDP 初始化。
+单机使用 `full` 分片，继续兼容本仓库的 CPU checkpoint 导出；每卡 batch 为 1，
+8 卡每次更新合计 8 个样本。现有 1.3B real/fake 模型、12 帧、五条件目标、
+分量权重、Z 归一化及更新频率保持不变。
+
+启动前需准备配置中的 parsed JSONL、Wan 模型和 generator checkpoint。
+LoRA 旧训练的 optimizer/resume checkpoint 不能用于恢复全参数训练；
+新训练使用 `generator_ckpt` 初始化，需要迁移 LoRA 权重时先通过
+`utils/export_distillation.py` 合并导出 generator，再用导出权重初始化。
+这里的 `12` 是 latent 帧数，未改为上游的 `21`；A100 40GB/80GB 的实际显存占用需在目标机器验证。
 
 训练仅使用 \(\mathcal C=\{\varnothing,PA,PB,AB,PAB\}\) 五种条件。
 P、A、B 单条件不用于 generator rollout、real/fake score 前向或 fake 训练。

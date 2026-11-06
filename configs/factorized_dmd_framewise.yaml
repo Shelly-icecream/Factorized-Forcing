@@ -9,23 +9,24 @@ logdir: factorized_outputs/training
 real_name: Wan2.1-T2V-1.3B
 fake_name: Wan2.1-T2V-1.3B
 staged_fsdp_init: true
+# Single-node 8-GPU FSDP: shard parameters, gradients and optimizer states.
+# Keep FULL_SHARD for compatibility with the existing CPU checkpoint exporter.
 sharding_strategy: full
 generator_fsdp_wrap_strategy: size
 real_score_fsdp_wrap_strategy: size
 fake_score_fsdp_wrap_strategy: size
 text_encoder_fsdp_wrap_strategy: size
-generator_cpu_offload: true
-real_score_cpu_offload: true
-fake_score_cpu_offload: true
-text_encoder_cpu_offload: true
+generator_cpu_offload: false
+real_score_cpu_offload: false
+fake_score_cpu_offload: false
+text_encoder_cpu_offload: false
 train_fake_score: true
 mixed_precision: true
 gradient_checkpointing: true
 factorized_activation_cpu_offload: false
 model_kwargs:
   timestep_shift: 5.0
-  lora_rank: 8
-  lora_alpha: 8
+  lora_rank: 0  # Full-parameter generator training, as in Causal-Forcing.
 
 denoising_step_list: [1000, 750, 500, 250]
 warp_denoising_step: true
