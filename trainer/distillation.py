@@ -225,23 +225,13 @@ class Trainer:
         if state.get("z_normalization") is not None:
             self.model.load_z_normalization_state_dict(state["z_normalization"])
 
-    def _factorized_subset(self):
-        from utils.pab_conditions import CONDITION_NAMES
-        from model.fake_score_training import sample_subset
-        index = (CONDITION_NAMES.index(sample_subset(dict(self.config.factorized_subset_probabilities)))
-                 if self.is_main_process else 0)
-        value = torch.tensor([index], device=self.device)
-        dist.broadcast(value, src=0)
-        return CONDITION_NAMES[value.item()]
-
     def _factorized_fwdbwd(self, batch, train_generator):
         with (torch.autograd.graph.save_on_cpu(pin_memory=True)
               if self.config.factorized_activation_cpu_offload else nullcontext()):
             if train_generator:
                 loss, logs = self.factorized_objective.generator_loss(batch["conditions"])
             else:
-                self.last_subset = self._factorized_subset()
-                loss, logs = self.factorized_objective.fake_loss(batch["conditions"], self.last_subset)
+                loss, logs = self.factorized_objective.fake_loss(batch["conditions"])
         if not torch.isfinite(loss):
             raise FloatingPointError("nonfinite factorized distillation loss")
         loss.backward()
@@ -459,7 +449,7 @@ class Trainer:
                     values.update(critic_log_dict)
                     metrics = {key: value.item() for key, value in values.items()
                                if isinstance(value, torch.Tensor) and value.numel() == 1}
-                    metrics.update(step=self.step, subset=self.last_subset)
+                    metrics.update(step=self.step)
                     with (Path(self.output_path) / "metrics.jsonl").open("a", encoding="utf-8") as handle:
                         handle.write(json.dumps(metrics) + "\n")
                 if not self.disable_wandb:

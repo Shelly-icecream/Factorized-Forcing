@@ -9,24 +9,30 @@ torchrun --standalone --nproc_per_node=6 train.py \
   --logdir logs/factorized_dmd --disable-wandb --no_visualize
 ```
 
-设 \(S\subseteq\{P,A,B\}\)，八种条件的 score 差异为：
+训练仅使用 \(\mathcal C=\{\varnothing,PA,PB,AB,PAB\}\) 五种条件。
+P、A、B 单条件不用于 generator rollout、real/fake score 前向或 fake 训练。
+原始解析数据仍保留八种文本字段，无需重新解析。
 
-\
-d_S=s_{\mathrm{fake}}(x_t\mid c_S)-s_{\mathrm{real}}(x_t\mid c_S)
-\
+令 \(d_S=s_{\mathrm{fake}}(x_t\mid c_S)-s_{\mathrm{real}}(x_t\mid c_S)\)。
 
-**① 分解与加权：`factorized_component_weights`**
+**① 差分与加权：`factorized_component_weights`**
+
+P/B/A 是更新分量的名称，不是单独的文本条件：P 对应主体，B 对应背景，A 对应动作。
 
 \[
-\Delta_S=\sum_{T\subseteq S}(-1)^{|S|-|T|}d_T,
-\qquad
-D=\sum_S w_S\Delta_S
+\Delta_\varnothing=d_\varnothing,\quad
+\Delta_P=d_{PAB}-d_{AB},\quad
+\Delta_B=d_{PAB}-d_{PA},\quad
+\Delta_A=d_{PAB}-d_{PB},\quad
+\Delta_{PAB}=d_{PAB}-d_\varnothing.
 \]
 
-例如 \(\Delta_{PA}=d_{PA}-d_P-d_A+d_\varnothing\)。全部 \(w_S=1\) 时：
+对 empty/P/B/A/PAB 五项加权求和。这些是完整条件减去部分条件的增量，
+不是纯语义因素或纯高阶交互。PA/PB/AB 仍作为 real/fake score 的输入条件。
+当前权重为 empty=1、P=B=A=0.5、PAB=1，得到：
 
 \[
-\boxed{D=d_{PAB}}
+D=2.5d_{PAB}-0.5(d_{PA}+d_{PB}+d_{AB}).
 \]
 
 **② 更新 generator**
@@ -40,26 +46,21 @@ g=\frac{\sigma^2}{(1-\sigma)Z}D,
 
 其中 \(x=G_\theta(z,c_{PAB})\)，\(Z\) 为归一化因子，MSE 仅计算选中位置。
 
-**③ 训练 fake：`factorized_subset_probabilities`**
+**③ 训练 fake：复用原 Causal Forcing 的 `DMD.critic_loss`**
+
+generator 和 fake 均使用完整 PAB 提示词，不采样子条件。
+generator 在 `no_grad` 下生成训练视频，再按原 critic 的时间步采样、
+timestep shift、scheduler 加噪和 denoising loss 更新 fake；real 不参与。
+没有额外的 fake rollout 或子条件概率配置。
+
+在 flow 配置下，去噪目标仍为：
 
 \[
-S\sim p_S=\frac{q_S}{\sum_Tq_T},
-\qquad
-x_t=(1-\sigma)\tilde x+\sigma\epsilon
+\tilde x=\operatorname{stopgrad}(G_\theta(z,c_{PAB})),\qquad
+\mathcal L_F=\operatorname{MSE}(v_\phi(x_t,t,c_{PAB}),\epsilon-\tilde x).
 \]
 
-\[
-\boxed{\mathcal L_F=\operatorname{MSE}
-\bigl(v_\phi(x_t\mid c_S),\,\epsilon-\tilde x\bigr)}
-\]
-
-其中 \(\tilde x=\operatorname{stopgrad}(G_\theta(z,c_S))\)。全部 \(q_S=1\) 时，每种条件以 \(1/8\) 的概率被选中。
-
-
-
-
-
-
+只有 generator 的分布匹配更新使用五条件 score 分解。
 
 
 <div align="center">

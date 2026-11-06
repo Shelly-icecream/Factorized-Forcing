@@ -43,8 +43,7 @@ load_raw_video: false
 
 factorized_microbatch: 1
 factorized_normalize: true
-factorized_component_weights: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 2.0, PB: 1.0, AB: 2.0, PAB: 1.0}
-factorized_subset_probabilities: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 1.0, PB: 1.0, AB: 1.0, PAB: 1.0}
+factorized_component_weights: {empty: 0.0, P: 0.5, B: 0.5, A: 0.5, PAB: 1.0}
 z_normalization_mode: timestep_ema
 z_ema_decay: 0.99
 z_ema_eps: 1.0e-6

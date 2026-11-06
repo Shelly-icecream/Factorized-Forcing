@@ -96,11 +96,15 @@ The existing training loop controls generator/critic updates, clipping, EMA,
 and saving. The P/A/B objective lives in `model/factorized_objective.py`.
 The original configs keep the ordinary DMD objective by default.
 
-Generator rollout uses PAB. Teacher and fake evaluate eight conditions on the
-same noisy sample. Component weights operate on the inclusion-exclusion terms;
-all-one weights reconstruct the full PAB difference. Fake updates sample one
-subset on rank zero and broadcast it, then use exactly that subset for both
-rollout and prediction. The configured ratio is one generator update per five
+Generator rollout uses PAB. Teacher and fake evaluate only empty/PA/PB/AB/PAB on the
+same noisy sample. Singleton P/A/B texts remain in the parsed dataset but are
+never encoded or rolled out in training. Components use separate labels: P = dPAB - dAB (subject),
+B = dPAB - dPA (background), A = dPAB - dPB (action),
+PAB = dPAB - dempty, empty = dempty. P/B/A are component labels,
+not singleton prompt evaluations. Component weights use empty/P/B/A/PAB.
+Fake updates call the original `DMD.critic_loss` with the full PAB prompt for
+both generator rollout and fake prediction. No subset is sampled, and the
+original critic timestep/noise/loss path is reused. The configured ratio is one generator update per five
 fake updates. Per-rank batch size is currently one, and only T2V is supported.
 
 Full factorized-training checkpoints contain both models/optimizers, data

@@ -33,9 +33,11 @@ def reconstruct_full_condition(components: Mapping[str, torch.Tensor]) -> torch.
 
 
 def decomposition_report(outputs: torch.Tensor) -> dict[str, object]:
-    components = decompose_conditions(outputs)
-    reconstructed = reconstruct_full_condition(components)
-    residual = reconstructed - outputs[CONDITION_INDICES["PAB"]]
+    components = (decompose_training_conditions(outputs) if outputs.shape[0] == 5
+                  else decompose_conditions(outputs))
+    reconstructed = (components["empty"] + components["PAB"] if outputs.shape[0] == 5
+                     else sum(components.values()))
+    residual = reconstructed - outputs[-1]
     return {
         "conditions": outputs,
         "components": components,
@@ -43,4 +45,23 @@ def decomposition_report(outputs: torch.Tensor) -> dict[str, object]:
         "reconstruction_error": residual,
         "reconstruction_max_abs": residual.abs().amax().item(),
         "component_norms": {name: value.float().norm().item() for name, value in components.items()},
+    }
+
+
+def decompose_training_conditions(outputs: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Full-minus-partial contrasts; P=subject, B=background, A=action.
+
+    Component labels P/B/A are not singleton text-condition names.
+    """
+    from utils.pab_conditions import TRAINING_CONDITION_NAMES
+    if outputs.ndim < 1 or outputs.shape[0] != len(TRAINING_CONDITION_NAMES):
+        raise ValueError("outputs must follow empty/PA/PB/AB/PAB order")
+    values = dict(zip(TRAINING_CONDITION_NAMES, outputs.unbind(0)))
+    full = values["PAB"]
+    return {
+        "empty": values["empty"],
+        "P": full - values["AB"],
+        "B": full - values["PA"],
+        "A": full - values["PB"],
+        "PAB": full - values["empty"],
     }

@@ -45,6 +45,17 @@ class TinyRuntime(torch.nn.Module):
         rollout = self.generator(value).reshape(1, 1, 1, 1, 1).expand(image_or_video_shape)
         return rollout, torch.ones_like(rollout, dtype=torch.bool), None, None
 
+    def critic_loss(self, image_or_video_shape, conditional_dict, unconditional_dict, clean_latent):
+        # Lightweight stand-in for the original critic, for CPU loop checks.
+        with torch.no_grad():
+            video = self._run_generator(image_or_video_shape, conditional_dict)[0]
+            noise = torch.randn_like(video)
+            timestep = torch.full(video.shape[:2], 500., device=video.device)
+            noisy = 0.5 * video + 0.5 * noise
+        flow, _ = self.fake_score(noisy_image_or_video=noisy, timestep=timestep,
+                                  conditional_dict=conditional_dict)
+        return torch.nn.functional.mse_loss(flow, noise - video), {"critic_timestep": timestep}
+
     def release_kv_cache(self):
         pass
 
@@ -83,7 +94,7 @@ def run_smoke(use_fsdp=False):
             generator_optimizer.zero_grad(set_to_none=True)
             fake_optimizer.zero_grad(set_to_none=True)
             item = next(stream)
-            fake_loss, _ = objective.fake_loss(item["conditions"], "P")
+            fake_loss, _ = objective.fake_loss(item["conditions"])
             fake_loss.backward()
             if any(p.grad is not None for p in model.generator.parameters()):
                 raise AssertionError("fake loss reached generator")

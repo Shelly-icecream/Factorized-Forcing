@@ -3,6 +3,8 @@ import re
 
 
 CONDITION_NAMES = ("empty", "P", "A", "B", "PA", "PB", "AB", "PAB")
+COMPONENT_NAMES = ("empty", "P", "B", "A", "PAB")
+TRAINING_CONDITION_NAMES = ("empty", "PA", "PB", "AB", "PAB")
 # Bit masks describe factor membership; tensor positions follow CONDITION_NAMES.
 CONDITION_MASKS = {name: sum({"P": 1, "A": 2, "B": 4}[letter] for letter in name)
                    if name != "empty" else 0 for name in CONDITION_NAMES}

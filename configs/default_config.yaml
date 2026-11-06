@@ -16,8 +16,7 @@ factorized_microbatch: 1
 factorized_parser_version: spacy_en_v1_multi_action
 factorized_normalize: true
 factorized_activation_cpu_offload: false
-factorized_component_weights: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 1.0, PB: 1.0, AB: 1.0, PAB: 1.0}
-factorized_subset_probabilities: {empty: 1.0, P: 1.0, A: 1.0, B: 1.0, PA: 1.0, PB: 1.0, AB: 1.0, PAB: 1.0}
+factorized_component_weights: {empty: 1.0, P: 1.0, B: 1.0, A: 1.0, PAB: 1.0}
 resume: null
 
 ckpt_step: 0

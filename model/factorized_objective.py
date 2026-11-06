@@ -3,15 +3,14 @@
 import math
 import torch
 
-from utils.pab_conditions import CONDITION_NAMES, CONDITION_INDICES
-from model.score_decomposition import decompose_conditions
-from model.fake_score_training import make_fake_score_batch, flow_target_loss
+from utils.pab_conditions import TRAINING_CONDITION_NAMES as CONDITION_NAMES, COMPONENT_NAMES
+from model.score_decomposition import decompose_training_conditions
 from model.condition_scores import evaluate_conditions, make_wan_predictor
 
 
 def validate_weights(weights):
-    if set(weights) != set(CONDITION_NAMES) or not all(math.isfinite(float(v)) for v in weights.values()):
-        raise ValueError("component weights must contain all eight names and finite values")
+    if set(weights) != set(COMPONENT_NAMES) or not all(math.isfinite(float(v)) for v in weights.values()):
+        raise ValueError("component weights must contain only empty/P/B/A/PAB and finite values")
     if not any(float(value) != 0 for value in weights.values()):
         raise ValueError("at least one component weight must be nonzero")
 
@@ -30,7 +29,7 @@ class FactorizedObjective:
         if microbatch < 1:
             raise ValueError("condition microbatch must be positive")
         self.model, self.shape, self.microbatch = model, list(shape), microbatch
-        self.weights = dict.fromkeys(CONDITION_NAMES, 1.) if weights is None else dict(weights)
+        self.weights = dict.fromkeys(COMPONENT_NAMES, 1.) if weights is None else dict(weights)
         validate_weights(self.weights)
         self.normalize = normalize
 
@@ -39,6 +38,8 @@ class FactorizedObjective:
         return self.model.text_encoder(text_prompts=texts)
 
     def rollout(self, conditions, subset):
+        if subset not in CONDITION_NAMES:
+            raise ValueError("singleton P/A/B conditions are disabled for training")
         encoded = self.encode([conditions[subset]])
         result = self.model._run_generator(image_or_video_shape=self.shape, conditional_dict=encoded)
         return result[0], result[1]
@@ -64,16 +65,16 @@ class FactorizedObjective:
             # All conditions and both models share this exact noisy sample/process.
             teacher = evaluate_conditions(noisy, timestep, conditions, self.encode,
                 make_wan_predictor(self.model.real_score, "score", self.model.scheduler),
-                microbatch=self.microbatch)
+                microbatch=self.microbatch, condition_names=CONDITION_NAMES)
             fake = evaluate_conditions(noisy, timestep, conditions, self.encode,
                 make_wan_predictor(self.model.fake_score, "score", self.model.scheduler),
-                microbatch=self.microbatch)
-            components = decompose_conditions(fake - teacher)
-            score_difference = sum(self.weights[name] * components[name] for name in CONDITION_NAMES).unsqueeze(0)
+                microbatch=self.microbatch, condition_names=CONDITION_NAMES)
+            components = decompose_training_conditions(fake - teacher)
+            score_difference = sum(self.weights[name] * components[name] for name in COMPONENT_NAMES).unsqueeze(0)
             s = sigma[..., None, None, None]
             # x0_fake - x0_real = sigma^2/(1-sigma) * (score_fake-score_real).
             gradient = s.square() / (1 - s) * score_difference
-            real_x0 = (noisy.float() + s.square() * teacher[CONDITION_INDICES["PAB"]].unsqueeze(0)) / (1 - s)
+            real_x0 = (noisy.float() + s.square() * teacher[CONDITION_NAMES.index("PAB")].unsqueeze(0)) / (1 - s)
             if self.normalize:
                 z = (rollout.detach().float() - real_x0).abs().mean((2, 3, 4))
                 if hasattr(self.model, "_get_z_normalizer"):
@@ -94,26 +95,19 @@ class FactorizedObjective:
         logs.update({"component_" + name: value.norm().detach() for name, value in components.items()})
         return loss, logs
 
-    def fake_loss(self, conditions, subset):
-        with torch.no_grad():
-            rollout, _ = self.rollout(conditions, subset)
-            _, noise, timestep, sigma = self.noise_sample(rollout)
-            batch = make_fake_score_batch(subset, conditions[subset], rollout.float(), noise.float(),
-                1 - sigma, sigma, timestep, rollout_subset=subset, rollout_condition=conditions[subset])
-            # Use the batch construction's noise process for both training and tests.
-            encoded = self.encode([batch.condition])
-        # The detached fake rollout no longer needs the generator's KV cache.
-        if hasattr(self.model, "release_kv_cache"):
-            self.model.release_kv_cache()
-        flow, _ = self.model.fake_score(noisy_image_or_video=batch.noisy.to(rollout.dtype),
-                                        conditional_dict=encoded, timestep=timestep)[:2]
-        loss = flow_target_loss(flow.float(), batch)
-        return loss, {"fake_loss": loss.detach()}
+    def fake_loss(self, conditions):
+        # Use the original Causal Forcing critic objective unchanged.
+        conditional = self.encode([conditions["PAB"]])
+        return self.model.critic_loss(
+            image_or_video_shape=self.shape,
+            conditional_dict=conditional,
+            unconditional_dict=None,  # DMD.critic_loss does not use this argument.
+            clean_latent=None,
+        )
 
 
 def validate_factorized_config(config):
     """Check the optional P/A/B objective before model memory is allocated."""
-    from .fake_score_training import sample_subset
     if config.batch_size != 1 or list(config.image_or_video_shape)[0] != 1:
         raise ValueError("factorized DMD requires per-rank batch_size=1")
     if config.i2v:
@@ -129,7 +123,3 @@ def validate_factorized_config(config):
     if not 0 <= config.ema_weight < 1:
         raise ValueError("ema_weight must be in [0, 1)")
     validate_weights(dict(config.factorized_component_weights))
-    probabilities = dict(config.factorized_subset_probabilities)
-    sample_subset(probabilities, torch.Generator().manual_seed(0))
-    if any(probabilities[name] <= 0 for name in CONDITION_NAMES):
-        raise ValueError("all eight fake subsets require positive sampling probabilities")

@@ -3,7 +3,7 @@
 from collections.abc import Callable
 import torch
 
-from utils.pab_conditions import CONDITION_NAMES
+from utils.pab_conditions import CONDITION_NAMES, TRAINING_CONDITION_NAMES
 from model.score_decomposition import decomposition_report
 
 
@@ -16,8 +16,9 @@ def evaluate_conditions(
     predict: Callable[[torch.Tensor, torch.Tensor, dict, torch.Tensor | None], torch.Tensor],
     mask: torch.Tensor | None = None,
     microbatch: int = 8,
+    condition_names: tuple[str, ...] = TRAINING_CONDITION_NAMES,
 ) -> torch.Tensor:
-    """Evaluate one caption at one shared noisy sample, returning [8, ...].
+    """Evaluate one caption at one shared noisy sample, returning [len(condition_names), ...].
 
     noisy has batch size one; timestep and mask have a leading singleton
     batch dimension (a scalar timestep is also accepted). Each microbatch
@@ -36,7 +37,11 @@ def evaluate_conditions(
     if timestep.shape[0] != 1 or (mask is not None and (mask.ndim == 0 or mask.shape[0] != 1)):
         raise ValueError("timestep and mask must have batch size 1")
     outputs = []
-    names = list(CONDITION_NAMES)
+    if not condition_names or len(set(condition_names)) != len(condition_names) or any(
+        name not in CONDITION_NAMES for name in condition_names
+    ):
+        raise ValueError("invalid evaluation condition names")
+    names = list(condition_names)
     for start in range(0, len(names), microbatch):
         batch_names = names[start:start + microbatch]
         encoded = encode([conditions[name] for name in batch_names])
@@ -49,7 +54,7 @@ def evaluate_conditions(
             raise ValueError("predict must return a tensor matching the repeated noisy sample shape")
         outputs.append(prediction)
     result = torch.cat(outputs, dim=0)
-    if result.shape[0] != 8:
+    if result.shape[0] != len(condition_names):
         raise ValueError("predict must return one condition result per encoded prompt")
     return result
 

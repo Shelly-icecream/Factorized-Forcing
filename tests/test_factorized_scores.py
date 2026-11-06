@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import torch
 
-from utils.pab_conditions import CONDITION_NAMES, CONDITION_MASKS
+from utils.pab_conditions import CONDITION_NAMES, CONDITION_MASKS, TRAINING_CONDITION_NAMES, COMPONENT_NAMES
 from model.score_decomposition import decompose_conditions, reconstruct_full_condition
 from model.condition_scores import evaluate_conditions, make_wan_predictor, analyze_teacher_and_fake
 from model.fake_score_training import make_fake_score_batch, score_target_loss, flow_target_loss, sample_subset
@@ -48,7 +48,7 @@ class EvaluationTests(unittest.TestCase):
                     self.assertFalse(torch.is_grad_enabled())
                     seen.extend(encoded["ids"].tolist())
                     return x + encoded["ids"][:, None, None]
-                output = evaluate_conditions(noisy, time, conditions, encode, predict, mask, microbatch)
+                output = evaluate_conditions(noisy, time, conditions, encode, predict, mask, microbatch, condition_names=CONDITION_NAMES)
                 self.assertEqual(seen, list(range(8)))
                 torch.testing.assert_close(output, noisy.detach().repeat(8, 1, 1) + torch.arange(8.)[:, None, None])
                 self.assertFalse(output.requires_grad)
@@ -77,34 +77,58 @@ class EvaluationTests(unittest.TestCase):
         torch.testing.assert_close(make_wan_predictor(wan, "flow")(x, torch.tensor([250.]), {}), torch.full_like(x, 2.))
         torch.testing.assert_close(make_wan_predictor(wan, "x0")(x, torch.tensor([250.]), {}), torch.full_like(x, 3.))
 
-    def test_teacher_fake_analysis_has_no_artificial_interactions(self):
-        conditions = dict(zip(CONDITION_NAMES, map(str, (0, 1, 2, 4, 3, 5, 6, 7))))
-        encode = lambda texts: {"ids": torch.tensor([float(t) for t in texts])}
+    def test_default_analysis_never_evaluates_singletons(self):
+        conditions = dict(zip(CONDITION_NAMES, CONDITION_NAMES))
+        seen = []
+        def encode(texts):
+            seen.extend(texts)
+            return {"ids": torch.tensor([float(CONDITION_NAMES.index(t)) for t in texts])}
         predict = lambda x, t, e, m: x + e["ids"].reshape(-1, 1)
         report = analyze_teacher_and_fake(torch.zeros(1, 1), torch.tensor(0.5), conditions,
                                           encode, predict, predict, microbatch=3)
+        self.assertEqual(seen, list(TRAINING_CONDITION_NAMES) * 2)
         for side in ("real", "fake"):
-            for name in ("PA", "PB", "AB", "PAB"):
-                self.assertEqual(report[side]["components"][name].item(), 0.)
+            self.assertEqual(tuple(report[side]["components"]), COMPONENT_NAMES)
+            self.assertEqual(report[side]["reconstruction_max_abs"], 0.)
+
+    def test_full_minus_partial_components_and_common_error_cancellation(self):
+        from model.score_decomposition import decompose_training_conditions
+        from model.factorized_objective import validate_weights
+        outputs = torch.tensor([10., 13., 15., 16., 17.])
+        components = decompose_training_conditions(outputs)
+        expected = dict(zip(COMPONENT_NAMES, (10., 1., 4., 2., 7.)))
+        for name, value in expected.items():
+            torch.testing.assert_close(components[name], torch.tensor(value))
+        weights = {"empty": 1., "P": .5, "B": .5, "A": .5, "PAB": 1.}
+        validate_weights(weights)
+        weighted = sum(weights[name] * components[name] for name in COMPONENT_NAMES)
+        torch.testing.assert_close(weighted, 2.5 * outputs[-1] - .5 * outputs[1:4].sum())
+        with self.assertRaises(ValueError):
+            validate_weights(dict.fromkeys(TRAINING_CONDITION_NAMES, 1.))
+        shifted = decompose_training_conditions(outputs + 123.)
+        for name in ("P", "B", "A", "PAB"):
+            torch.testing.assert_close(shifted[name], components[name])
 
 
 class FakeTrainingTests(unittest.TestCase):
     def batch(self, **overrides):
-        values = dict(subset="P", condition="A man", rollout=torch.ones(2, 3, 1, 1, 1, requires_grad=True),
+        values = dict(subset="PA", condition="A man", rollout=torch.ones(2, 3, 1, 1, 1, requires_grad=True),
                       noise=torch.full((2, 3, 1, 1, 1), 2.), alpha=torch.tensor([0.8, 0.6]),
                       sigma=torch.tensor([0.2, 0.4]), timestep=torch.tensor([200., 400.]),
-                      rollout_condition="A man", rollout_subset="P")
+                      rollout_condition="A man running in a park", rollout_subset="PAB")
         values.update(overrides)
         return make_fake_score_batch(**values)
 
     def test_labels_and_text_checked_separately(self):
         batch = self.batch()
-        self.assertEqual(batch.subset, "P")
+        self.assertEqual(batch.subset, "PA")
         self.assertEqual(batch.condition, "A man")
+        self.assertEqual(batch.rollout_subset, "PAB")
+        self.assertEqual(batch.rollout_condition, "A man running in a park")
         self.assertFalse(batch.rollout.requires_grad)
         self.assertFalse(batch.noisy.requires_grad)
         torch.testing.assert_close(batch.noisy[:, 0, 0, 0, 0], torch.tensor([1.2, 1.4]))
-        for overrides in ({"rollout_subset": "A"}, {"rollout_condition": "A woman"}, {"subset": "unknown"}):
+        for overrides in ({"rollout_subset": "A"}, {"subset": "PAB"}, {"subset": "unknown"}):
             with self.assertRaises(ValueError):
                 self.batch(**overrides)
 
@@ -134,8 +158,8 @@ class FakeTrainingTests(unittest.TestCase):
                           {"alpha": torch.tensor(float("nan"))}):
             with self.assertRaises(ValueError):
                 self.batch(**overrides)
-        probabilities = dict.fromkeys(CONDITION_NAMES, 1.)
-        probabilities["P"] = float("nan")
+        probabilities = dict.fromkeys(TRAINING_CONDITION_NAMES, 1.)
+        probabilities["PA"] = float("nan")
         with self.assertRaises(ValueError):
             sample_subset(probabilities)
 

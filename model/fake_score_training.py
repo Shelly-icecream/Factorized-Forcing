@@ -1,9 +1,9 @@
-"""Small, explicit helpers for condition-aligned fake-score updates."""
+"""Fake-score updates: full-prompt rollouts with sampled evaluation conditions."""
 
 from dataclasses import dataclass
 import torch
 
-from utils.pab_conditions import CONDITION_NAMES
+from utils.pab_conditions import TRAINING_CONDITION_NAMES as CONDITION_NAMES
 
 
 @dataclass
@@ -16,11 +16,13 @@ class FakeSubsetBatch:
     timestep: torch.Tensor
     alpha: torch.Tensor
     sigma: torch.Tensor
+    rollout_subset: str
+    rollout_condition: str
 
 
 def sample_subset(probabilities: dict[str, float], generator=None) -> str:
     if set(probabilities) != set(CONDITION_NAMES):
-        raise ValueError("subset probabilities must contain all eight condition names")
+        raise ValueError("subset probabilities must contain only empty/PA/PB/AB/PAB")
     values = torch.tensor([probabilities[name] for name in CONDITION_NAMES], dtype=torch.float64)
     if not torch.isfinite(values).all() or torch.any(values < 0) or values.sum() <= 0:
         raise ValueError("subset probabilities must be finite, non-negative and have positive mass")
@@ -44,12 +46,17 @@ def make_fake_score_batch(
     """Keep subset labels separate from the exact text used for rollout.
 
     alpha/sigma may be scalars, per-example [B], or per-frame [B, F].
-    Both the rollout and its condition metadata must come from the same sample.
+    Rollouts always use PAB; the sampled subset controls fake prediction only.
+    Keep the full rollout prompt as provenance rather than equating the two texts.
     """
     if subset not in CONDITION_NAMES:
         raise ValueError("unknown condition subset")
-    if subset != rollout_subset or condition != rollout_condition:
-        raise ValueError("rollout and fake-score condition must be identical")
+    if rollout_subset != "PAB":
+        raise ValueError("fake-score training requires a full PAB rollout")
+    if not isinstance(rollout_condition, str):
+        raise ValueError("rollout condition must be the full prompt text")
+    if subset == "PAB" and condition != rollout_condition:
+        raise ValueError("PAB prediction and rollout prompts must match")
     if not isinstance(condition, str):
         raise ValueError("condition must be the prompt text")
     if rollout.shape != noise.shape:
@@ -60,7 +67,7 @@ def make_fake_score_batch(
         raise ValueError("alpha must be non-negative and sigma must be positive")
     noisy = alpha * rollout.detach() + sigma * noise.detach()
     return FakeSubsetBatch(subset, condition, rollout.detach(), noisy,
-                           noise.detach(), timestep, alpha, sigma)
+                           noise.detach(), timestep, alpha, sigma, rollout_subset, rollout_condition)
 
 
 def _coefficient(value: torch.Tensor, reference: torch.Tensor) -> torch.Tensor:

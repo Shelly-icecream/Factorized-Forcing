@@ -13,7 +13,7 @@ from prompt_processing.parser import CaptionParser
 from trainer.distillation import Trainer
 from utils.distillation_checkpoint import load_checkpoint
 from utils.distributed import EMA_FSDP
-from utils.pab_conditions import CONDITION_NAMES
+from utils.pab_conditions import TRAINING_CONDITION_NAMES as CONDITION_NAMES
 from utils.pab_dataset import ParsedCaptionDataset, CaptionStream
 from tests.factorized_smoke import TinyRuntime, run_smoke
 
@@ -25,7 +25,6 @@ class DistillationTrainingTests(unittest.TestCase):
             max_train_steps=steps, dfake_gen_update_ratio=2, no_save=False,
             log_iters=2, ema_start_step=0, ema_weight=0.9, gc_interval=100,
             factorized_activation_cpu_offload=False,
-            factorized_subset_probabilities=dict.fromkeys(CONDITION_NAMES, 1.0),
         )
         trainer.factorized = True
         trainer.step = 0
@@ -45,6 +44,31 @@ class DistillationTrainingTests(unittest.TestCase):
         trainer.generator_ema = EMA_FSDP(trainer.model.generator, decay=0.9, trainable_only=True)
         trainer.checkpoint_signature = {"dataset_sha256": trainer.dataset.fingerprint, "seed": 42}
         return trainer
+
+    def test_objective_never_encodes_singletons_and_rejects_their_rollouts(self):
+        model = TinyRuntime().eval()
+        objective = FactorizedObjective(model, [1, 2, 1, 2, 2], microbatch=2)
+        conditions = {name: name for name in ("empty", "P", "A", "B", "PA", "PB", "AB", "PAB")}
+        with patch.object(model, "text_encoder", wraps=model.text_encoder) as encoder:
+            loss, _ = objective.generator_loss(conditions)
+            loss.backward()
+            with patch.object(model, "critic_loss", wraps=model.critic_loss) as critic:
+                with patch.object(model, "_run_generator", wraps=model._run_generator) as rollout:
+                    with patch.object(model.fake_score, "forward", wraps=model.fake_score.forward) as predict:
+                        for parameter in model.generator.parameters():
+                            parameter.grad = None
+                        fake_loss, _ = objective.fake_loss(conditions)
+                        fake_loss.backward()
+                        critic.assert_called_once()
+                        expected = model.text_encoder(text_prompts=["PAB"])
+                        torch.testing.assert_close(rollout.call_args.args[1]["value"], expected["value"])
+                        torch.testing.assert_close(predict.call_args.kwargs["conditional_dict"]["value"],
+                                                   expected["value"])
+                        self.assertTrue(all(p.grad is None for p in model.generator.parameters()))
+                        self.assertTrue(all(p.grad is None for p in model.real_score.parameters()))
+            texts = [text for call in encoder.call_args_list for text in call.kwargs["text_prompts"]]
+            self.assertTrue(set(texts) <= set(CONDITION_NAMES))
+            self.assertEqual(texts[-1], "PAB")
 
     def test_shared_loop_updates_both_models_and_resumes_exactly(self):
         with tempfile.TemporaryDirectory() as temporary:
