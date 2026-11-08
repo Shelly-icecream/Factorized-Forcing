@@ -1,3 +1,23 @@
+多卡批量 T2V 推理（默认 4 卡、12 个 latent 帧，输出 45 帧视频）：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 NPROC_PER_NODE=4 \
+bash scripts/infer_multi_gpu.sh \
+  --config_path configs/causal_forcing_dmd_framewise.yaml \
+  --checkpoint_path checkpoints/framewise/causal_forcing.pt \
+  --data_path prompts/small.txt \
+  --output_folder output/baseline \
+  --num_output_frames 12
+```
+
+每张卡独立加载模型，按 prompt 编号分配任务，数量不能整除卡数也不会遗漏。
+`--data_path` 支持单个 TXT、含 `caption`/`prompt` 字段的 JSONL，或递归读取目录下全部 TXT。
+文件名严格使用完整提示词加 `.mp4`，保留大小写、空格和标点，不截断、不添加编号；
+相同提示词只生成一次。含 `/`、NUL 或超过文件系统名称长度限制时明确报错。
+`manifest.jsonl` 记录文件名、完整提示词、来源和 seed；重复运行跳过已生成视频，
+`--overwrite` 强制重新生成。续跑时保持输入、配置和 seed 一致。
+`--dry_run` 可检查任务分配和文件名，不加载 GPU 模型。`--use_ema` 选择 checkpoint 的 EMA 权重。
+
 <div align="center">
 
 ## Causal Forcing & Causal Forcing++
