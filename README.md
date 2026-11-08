@@ -1,3 +1,23 @@
+多卡批量推理使用 [`inference_multi_gpu.py`](inference_multi_gpu.py)，每张卡独立加载模型并处理不同 prompt：
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 NPROC_PER_NODE=6 \
+  bash scripts/infer_multi_gpu.sh \
+  --checkpoint_path logs/factorized_dmd/generator_step10.pt \
+  --data_path prompts \
+  --output_folder outputs/factorized_step10
+```
+
+将 checkpoint 路径替换为训练导出的完整权重文件；自动读取同名 `.config.json`，
+不要传入训练用的 `rank_*.pt` 分片。不传 checkpoint 时使用配置中的 `generator_ckpt`。
+默认递归处理 `prompts/` 的所有 `.txt` 文件，每个非空行生成一个视频；
+也可用 `--data_path prompts/demos.txt` 或指定含 `caption`/`prompt` 字段的 JSONL 文件。
+目录模式不读取 JSONL，以免把原始文本和解析结果重复生成。
+默认 21 个 latent 帧（81 帧视频）、16 FPS，可通过 `--num_output_frames`、`--fps` 修改。
+输出文件使用唯一哈希命名，`manifest.jsonl` 记录原始文件、行号、prompt、文件名和 seed。
+重复运行会跳过已完成视频，`--overwrite` 强制重生成；续跑时保持输入、配置和 seed 一致。
+`--dry_run` 只生成清单并报告各卡任务数，不加载模型。
+
 PAB 数据处理在 [`prompt_processing/`](prompt_processing/README.md)，词表为
 [`rules.json`](prompt_processing/rules.json)，解析结果与审计报告在 `prompts/processed/`。
 训练统一使用原有 `train.py` → `trainer/distillation.py`，配置为
