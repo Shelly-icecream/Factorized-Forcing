@@ -2,7 +2,7 @@
 # 1.3B models, generator LoRA, CPU offload and 12 latent frames.
 trainer: score_distillation
 factorized_enabled: true
-data_path: factorized_outputs/vidprom_filtered_extended.parsed.spacy.jsonl
+data_path: prompts/processed/results.jsonl
 factorized_parser_version: spacy_en_v1_multi_action
 generator_ckpt: checkpoints/framewise/causal_forcing.pt
 resume: null
