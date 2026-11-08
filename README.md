@@ -3,11 +3,23 @@ PAB 数据处理在 [`prompt_processing/`](prompt_processing/README.md)，词表
 训练统一使用原有 `train.py` → `trainer/distillation.py`，配置为
 [`factorized_dmd_framewise.yaml`](configs/factorized_dmd_framewise.yaml)。
 
+本分支为 RTX4090 训练配置；方法实现与 A100 分支共用五条件 factorized DMD。
+保留 1.3B generator/real score/fake score、generator LoRA rank/alpha 8、
+四个模型的参数 CPU offload、BF16、gradient checkpointing、逐模型 FSDP 初始化，
+以及每卡 batch 1、12 个 latent 帧、factorized microbatch 1。
+不套用 A100 的 14B teacher、全参数 generator、关闭 CPU offload 和 21 帧设置。
+默认按单机 6 张 RTX4090 启动；实际显存占用仍需在目标机器验证。
+
 ```bash
 torchrun --standalone --nproc_per_node=6 train.py \
   --config_path configs/factorized_dmd_framewise.yaml \
   --logdir logs/factorized_dmd --disable-wandb --no_visualize
 ```
+
+也可运行 `bash scripts/train_factorized_rtx4090.sh`。
+卡数可通过 `NPROC_PER_NODE=6` 指定；例如先用
+`bash scripts/train_factorized_rtx4090.sh --max-steps 10 --no-save` 做短跑验证。
+`max_train_steps` 使用配置文件当前值，命令行 `--max-steps` 可覆盖。
 
 训练仅使用 \(\mathcal C=\{\varnothing,PA,PB,AB,PAB\}\) 五种条件。
 P、A、B 单条件不用于 generator rollout、real/fake score 前向或 fake 训练。

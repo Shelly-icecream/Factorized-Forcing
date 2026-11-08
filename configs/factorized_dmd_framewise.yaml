@@ -1,3 +1,5 @@
+# RTX4090 profile: keep hardware settings separate from the A100 branch.
+# 1.3B models, generator LoRA, CPU offload and 12 latent frames.
 trainer: score_distillation
 factorized_enabled: true
 data_path: factorized_outputs/vidprom_filtered_extended.parsed.spacy.jsonl
@@ -58,6 +60,6 @@ max_grad_norm_critic: 10.0
 dfake_gen_update_ratio: 5
 ema_weight: 0.99
 ema_start_step: 200
-max_train_steps: 250
+max_train_steps: 10
 log_iters: 100
 seed: 42
