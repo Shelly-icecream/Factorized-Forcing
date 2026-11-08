@@ -1,9 +1,9 @@
 """Independent prompt-parallel T2V inference, launched with torchrun."""
 
 import argparse
-import hashlib
 import json
 import os
+import re
 from pathlib import Path
 
 
@@ -12,6 +12,7 @@ def read_prompts(path):
     path = Path(path)
     files = sorted(path.rglob("*.txt")) if path.is_dir() else [path]
     records = []
+    used_names = set()
     for source in files:
         with source.open(encoding="utf-8") as stream:
             for line_number, line in enumerate(stream, 1):
@@ -24,11 +25,17 @@ def read_prompts(path):
                     if not isinstance(prompt, str) or not prompt.strip():
                         raise ValueError(f"{source}:{line_number}: expected caption or prompt string")
                     prompt = prompt.strip()
-                # Hash avoids collisions across files, duplicate captions and unsafe path characters.
-                identity = json.dumps([str(source), line_number, prompt], ensure_ascii=False)
-                digest = hashlib.sha256(identity.encode()).hexdigest()[:16]
+                # Leave space for duplicate suffixes and .partial.mp4; limit bytes for UTF-8 paths.
+                stem = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "_", prompt)
+                stem = stem.encode("utf-8")[:200].decode("utf-8", errors="ignore").strip(" .") or "prompt"
+                filename = f"{stem}.mp4"
+                duplicate = 2
+                while filename.casefold() in used_names:
+                    filename = f"{stem} ({duplicate}).mp4"
+                    duplicate += 1
+                used_names.add(filename.casefold())
                 records.append(dict(source=str(source), line=line_number, prompt=prompt,
-                                    filename=f"{digest}.mp4"))
+                                    filename=filename))
     if not records:
         raise ValueError(f"No nonempty prompts found in {path}")
     return records
