@@ -3,7 +3,6 @@
 import argparse
 import json
 import os
-import re
 from pathlib import Path
 
 
@@ -16,24 +15,21 @@ def read_prompts(path):
     for source in files:
         with source.open(encoding="utf-8") as stream:
             for line_number, line in enumerate(stream, 1):
-                prompt = line.strip()
-                if not prompt:
+                prompt = line.rstrip("\r\n")
+                if not prompt.strip():
                     continue
                 if source.suffix == ".jsonl":
                     row = json.loads(prompt)
                     prompt = row.get("caption", row.get("prompt"))
                     if not isinstance(prompt, str) or not prompt.strip():
                         raise ValueError(f"{source}:{line_number}: expected caption or prompt string")
-                    prompt = prompt.strip()
-                # Leave space for duplicate suffixes and .partial.mp4; limit bytes for UTF-8 paths.
-                stem = re.sub(r'[<>:"/\\|?*\x00-\x1f\x7f]', "_", prompt)
-                stem = stem.encode("utf-8")[:200].decode("utf-8", errors="ignore").strip(" .") or "prompt"
-                filename = f"{stem}.mp4"
-                duplicate = 2
-                while filename.casefold() in used_names:
-                    filename = f"{stem} ({duplicate}).mp4"
-                    duplicate += 1
-                used_names.add(filename.casefold())
+                filename = f"{prompt}.mp4"
+                if "/" in filename or "\x00" in filename:
+                    raise ValueError(f"{source}:{line_number}: prompt contains '/' or NUL; cannot use it verbatim as a filename")
+                # Identical names share one task so separate ranks cannot overwrite each other.
+                if filename in used_names:
+                    continue
+                used_names.add(filename)
                 records.append(dict(source=str(source), line=line_number, prompt=prompt,
                                     filename=filename))
     if not records:
@@ -62,6 +58,10 @@ def main():
     records = read_prompts(args.data_path)
     output = Path(args.output_folder)
     output.mkdir(parents=True, exist_ok=True)
+    name_max = os.pathconf(output, "PC_NAME_MAX")
+    for record in records:
+        if len(os.fsencode(record["filename"])) > name_max:
+            raise ValueError(f"{record['source']}:{record['line']}: complete prompt filename exceeds filesystem limit ({name_max} bytes); name was not truncated")
     if rank == 0:
         with (output / "manifest.jsonl").open("w", encoding="utf-8") as stream:
             for index, record in enumerate(records):
@@ -125,7 +125,7 @@ def main():
         video = pipeline.inference(noise=noise, text_prompts=[record["prompt"]])
         frames = (video[0].permute(0, 2, 3, 1).clamp(0, 1) * 255).to(dtype=torch.uint8, device="cpu")
         target = output / record["filename"]
-        temporary = target.with_name(target.stem + ".partial.mp4")
+        temporary = output / f".inference-rank-{rank}.partial.mp4"
         write_video(str(temporary), frames, fps=args.fps)
         os.replace(temporary, target)
         pipeline.vae.model.clear_cache()

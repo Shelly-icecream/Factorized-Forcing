@@ -14,7 +14,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3,4,5 NPROC_PER_NODE=6 \
 也可用 `--data_path prompts/demos.txt` 或指定含 `caption`/`prompt` 字段的 JSONL 文件。
 目录模式不读取 JSONL，以免把原始文本和解析结果重复生成。
 默认 21 个 latent 帧（81 帧视频）、16 FPS，可通过 `--num_output_frames`、`--fps` 修改。
-输出文件以提示词命名，非法文件名字符替换为下划线，过长名称截断，同名时追加 ` (2)` 等编号。
+输出文件名为完整提示词加 `.mp4`，保留大小写、空格和标点，不截断或添加编号。
+完全相同的提示词只生成一次；含 `/`、NUL 或超过文件系统名称长度限制时明确报错，不修改名称。
 `manifest.jsonl` 记录原始文件、行号、完整 prompt、文件名和 seed。
 重复运行会跳过已完成视频，`--overwrite` 强制重生成；续跑时保持输入、配置和 seed 一致。
 `--dry_run` 只生成清单并报告各卡任务数，不加载模型。
