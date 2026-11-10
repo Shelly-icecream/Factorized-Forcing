@@ -1,6 +1,7 @@
 """Factorized DMD objectives, shared by real Wan training and small smoke tests."""
 
 import math
+from itertools import combinations
 import torch
 
 from utils.pab_conditions import TRAINING_CONDITION_NAMES as CONDITION_NAMES, COMPONENT_NAMES
@@ -20,6 +21,48 @@ def sigma_at(scheduler, timestep, reference):
     indices = (times[:, None] - timestep.double().reshape(1, -1)).abs().argmin(dim=0)
     sigma = scheduler.sigmas.to(device=reference.device, dtype=torch.float32)[indices]
     return sigma.reshape(timestep.shape)
+
+
+@torch.no_grad()
+def score_direction_metrics(terms, full_conditional, baseline_cfg, mask=None):
+    """Local-rank score-space diagnostics before sigma scaling/normalization.
+
+    Zero-vector cosines/ratios are reported as zero with a validity flag.
+    A low sum_to_norm_sum indicates cancellation, not necessarily bad quality.
+    """
+    def vector(value):
+        value = value.detach().float()
+        return value.reshape(-1) if mask is None else value[mask.bool().expand_as(value)]
+
+    vectors = {name: vector(value) for name, value in terms.items()}
+    refs = {"full_conditional": vector(full_conditional), "baseline_cfg": vector(baseline_cfg)}
+    norms = {name: value.norm() for name, value in vectors.items()}
+    logs = {}
+
+    def cosine(name, left, right):
+        denominator = left.norm() * right.norm()
+        valid = denominator > 1e-12
+        logs[name] = torch.where(valid, torch.dot(left, right) / denominator.clamp_min(1e-12), 0.)
+        logs[name + "_valid"] = valid.float()
+
+    for ref, value in refs.items():
+        logs[f"score/reference_norm/{ref}"] = value.norm()
+    for name, value in vectors.items():
+        logs[f"score/weighted_norm/{name}"] = norms[name]
+        for ref, reference in refs.items():
+            denominator = reference.norm()
+            key = f"score/relative_norm/{name}_to_{ref}"
+            logs[key] = torch.where(denominator > 1e-12, norms[name] / denominator.clamp_min(1e-12), 0.)
+            logs[key + "_valid"] = (denominator > 1e-12).float()
+            cosine(f"score/cosine/{name}_vs_{ref}", value, reference)
+    for left, right in combinations(vectors, 2):
+        cosine(f"score/cosine/{left}_vs_{right}", vectors[left], vectors[right])
+    total = sum(vectors.values())
+    norm_sum = sum(norms.values())
+    logs["score/total_norm"] = total.norm()
+    logs["score/sum_to_norm_sum"] = torch.where(norm_sum > 1e-12, total.norm() / norm_sum.clamp_min(1e-12), 0.)
+    logs["score/sum_to_norm_sum_valid"] = (norm_sum > 1e-12).float()
+    return logs
 
 
 class FactorizedObjective:
@@ -71,10 +114,37 @@ class FactorizedObjective:
                 microbatch=self.microbatch, condition_names=CONDITION_NAMES)
             components = decompose_training_conditions(fake - teacher)
             score_difference = sum(self.weights[name] * components[name] for name in COMPONENT_NAMES).unsqueeze(0)
+            # Preserve baseline CFG separately from the factor contrasts. In
+            # particular, R (the "empty" condition) is not the negative prompt.
+            full = CONDITION_NAMES.index("PAB")
+            teacher_full = teacher[full].unsqueeze(0)
+            cfg_correction = torch.zeros_like(teacher_full)
+            real_scale = getattr(self.model, "real_guidance_scale", 0.0)
+            fake_scale = getattr(self.model, "fake_guidance_scale", 0.0)
+            if real_scale != 0.0 or fake_scale != 0.0:
+                negative = self.encode([self.model.args.negative_prompt])
+                if real_scale != 0.0:
+                    teacher_negative = make_wan_predictor(
+                        self.model.real_score, "score", self.model.scheduler)(noisy, timestep, negative, None)
+                    teacher_guidance = real_scale * (teacher_full - teacher_negative)
+                    score_difference = score_difference - teacher_guidance
+                    cfg_correction = cfg_correction - teacher_guidance
+                    teacher_full = teacher_full + teacher_guidance
+                if fake_scale != 0.0:
+                    fake_negative = make_wan_predictor(
+                        self.model.fake_score, "score", self.model.scheduler)(noisy, timestep, negative, None)
+                    fake_guidance = fake_scale * (fake[full].unsqueeze(0) - fake_negative)
+                    score_difference = score_difference + fake_guidance
+                    cfg_correction = cfg_correction + fake_guidance
+            full_difference = (fake[full] - teacher[full]).unsqueeze(0)
+            terms = {name: (self.weights[name] * value).unsqueeze(0) for name, value in components.items()}
+            terms["CFG"] = cfg_correction
+            direction_logs = score_direction_metrics(
+                terms, full_difference, full_difference + cfg_correction, mask)
             s = sigma[..., None, None, None]
             # x0_fake - x0_real = sigma^2/(1-sigma) * (score_fake-score_real).
             gradient = s.square() / (1 - s) * score_difference
-            real_x0 = (noisy.float() + s.square() * teacher[CONDITION_NAMES.index("PAB")].unsqueeze(0)) / (1 - s)
+            real_x0 = (noisy.float() + s.square() * teacher_full) / (1 - s)
             if self.normalize:
                 z = (rollout.detach().float() - real_x0).abs().mean((2, 3, 4))
                 if hasattr(self.model, "_get_z_normalizer"):
@@ -93,6 +163,9 @@ class FactorizedObjective:
         loss = 0.5 * torch.nn.functional.mse_loss(rollout.float()[selected], target[selected])
         logs = {"generator_loss": loss.detach(), "gradient_norm": gradient.norm().detach()}
         logs.update({"component_" + name: value.norm().detach() for name, value in components.items()})
+        logs.update(direction_logs)
+        logs["score/sigma_mean"] = sigma.float().mean()
+        logs["score/timestep_mean"] = timestep.float().mean()
         return loss, logs
 
     def fake_loss(self, conditions):

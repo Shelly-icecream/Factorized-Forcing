@@ -450,6 +450,8 @@ class Trainer:
                     metrics = {key: value.item() for key, value in values.items()
                                if isinstance(value, torch.Tensor) and value.numel() == 1}
                     metrics.update(step=self.step)
+                    wandb_loss_dict.update({key: value for key, value in metrics.items()
+                                            if key.startswith("score/")})
                     with (Path(self.output_path) / "metrics.jsonl").open("a", encoding="utf-8") as handle:
                         handle.write(json.dumps(metrics) + "\n")
                 if not self.disable_wandb:
