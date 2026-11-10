@@ -6,6 +6,18 @@ import os
 from pathlib import Path
 
 
+def select_generator_state(state, key=None):
+    """Prefer generator by default, falling back to EMA-only checkpoints."""
+    if key is None:
+        key = next((candidate for candidate in ("generator", "generator_ema") if candidate in state), None)
+    if key is None or key not in state:
+        raise ValueError(f"Checkpoint has no {key or 'generator / generator_ema'} weights; available keys: {list(state)[:20]}")
+    weights = state[key]
+    if not isinstance(weights, dict) or "optimizer" in weights:
+        raise ValueError("Expected complete generator weights; export training shards before inference")
+    return key, {name.replace("_fsdp_wrapped_module.", ""): value for name, value in weights.items()}
+
+
 def read_prompts(path):
     """A directory means all recursive .txt files; JSONL is opt-in by file."""
     path = Path(path)
@@ -99,9 +111,8 @@ def main():
 
     def load_weights(path, key, strict):
         state = torch.load(path, map_location="cpu", weights_only=False)
-        if key is None:
-            key = "generator_ema" if "generator_ema" in state else "generator"
-        weights = {name.replace("_fsdp_wrapped_module.", ""): value for name, value in state[key].items()}
+        key, weights = select_generator_state(state, key)
+        print(f"[rank {rank}] Loading {path}: {key}", flush=True)
         result = pipeline.generator.load_state_dict(weights, strict=strict)
         if not strict and (result.unexpected_keys or any("lora" not in name for name in result.missing_keys)):
             raise ValueError(f"Incompatible base checkpoint: {result}")
@@ -109,7 +120,7 @@ def main():
     if not args.checkpoint_path and config.get("generator_ckpt"):
         load_weights(config.generator_ckpt, None, False)
     if args.checkpoint_path:
-        load_weights(args.checkpoint_path, "generator_ema" if args.use_ema else "generator", True)
+        load_weights(args.checkpoint_path, "generator_ema" if args.use_ema else None, True)
     pipeline = pipeline.to(dtype=torch.bfloat16).eval()
     if get_cuda_free_memory_gb(device) < 40:
         DynamicSwapInstaller.install_model(pipeline.text_encoder, device=device)
