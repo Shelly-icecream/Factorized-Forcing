@@ -2,6 +2,10 @@ import argparse
 import argparse
 import torch
 import os
+import tempfile
+
+import av
+from pathlib import Path
 from omegaconf import OmegaConf
 from tqdm import tqdm
 from torchvision import transforms
@@ -9,7 +13,6 @@ from torchvision.io import write_video
 from einops import rearrange
 import torch.distributed as dist
 from torch.utils.data import DataLoader, SequentialSampler
-from torch.utils.data.distributed import DistributedSampler
 import json
 
 from pipeline import (
@@ -19,7 +22,7 @@ from pipeline import (
 from utils.dataset import TextDataset, TextImagePairDataset
 from utils.misc import set_seed
 
-from demo_utils.memory import gpu, get_cuda_free_memory_gb, DynamicSwapInstaller
+from demo_utils.memory import get_cuda_free_memory_gb, DynamicSwapInstaller
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--config_path", type=str, help="Path to the config file")
@@ -32,25 +35,27 @@ parser.add_argument("--seed", type=int, default=0, help="Random seed")
 parser.add_argument("--i2v", action="store_true", help="Whether to perform I2V (or T2V by default)")
 parser.add_argument("--report_timing", action="store_true",
                     help="Only tested on A800, for the Causal Forcing++ latency. Not make claims for other hardware like H100. For the result on H100, refer to the reported results in the Self Forcing paper.")
+parser.add_argument("--no_lora", action="store_true", help="Disable LoRA adapters for inference")
 args = parser.parse_args()
 
 # Initialize distributed inference
 if "LOCAL_RANK" in os.environ:
-    dist.init_process_group(backend='nccl')
     local_rank = int(os.environ["LOCAL_RANK"])
     torch.cuda.set_device(local_rank)
     device = torch.device(f"cuda:{local_rank}")
+    dist.init_process_group(backend='nccl')
+    rank = dist.get_rank()
     world_size = dist.get_world_size()
     
 else:
     device = torch.device("cuda")
-    local_rank = 0
+    rank = 0
     world_size = 1
 
 set_seed(args.seed)
 
-print(f'Free VRAM {get_cuda_free_memory_gb(gpu)} GB')
-low_memory = get_cuda_free_memory_gb(gpu) < 40
+print(f'Free VRAM {get_cuda_free_memory_gb(device)} GB')
+low_memory = get_cuda_free_memory_gb(device) < 40
 
 torch.set_grad_enabled(False)
 
@@ -58,10 +63,12 @@ config = OmegaConf.load(args.config_path)
 default_config = OmegaConf.load("configs/default_config.yaml")
 config = OmegaConf.merge(default_config, config)
 if args.checkpoint_path:
-    from pathlib import Path
     companion = Path(args.checkpoint_path).with_suffix(".config.json")
     if companion.is_file():
         config = OmegaConf.merge(config, OmegaConf.load(companion))
+
+if args.no_lora:
+    OmegaConf.update(config, "model_kwargs.lora_rank", 0)
 
 # Initialize pipeline
 if hasattr(config, 'denoising_step_list'):
@@ -78,8 +85,9 @@ def load_generator_state(state):
         fixed[name] = value
     return fixed
 
-if getattr(config, "generator_ckpt", False):
-    base_checkpoint = torch.load(config.generator_ckpt, map_location="cpu")
+base_path = config.get("generator_ckpt")
+if base_path and (not args.checkpoint_path or Path(base_path).resolve() != Path(args.checkpoint_path).resolve()):
+    base_checkpoint = torch.load(base_path, map_location="cpu")
     base_key = "generator_ema" if "generator_ema" in base_checkpoint else "generator"
     base_state = load_generator_state(base_checkpoint[base_key])
     pipeline.generator.load_state_dict(base_state, strict=False)
@@ -92,11 +100,11 @@ if args.checkpoint_path:
 
 pipeline = pipeline.to(dtype=torch.bfloat16)
 if low_memory:
-    DynamicSwapInstaller.install_model(pipeline.text_encoder, device=gpu)
+    DynamicSwapInstaller.install_model(pipeline.text_encoder, device=device)
 else:
-    pipeline.text_encoder.to(device=gpu)
-pipeline.generator.to(device=gpu)
-pipeline.vae.to(device=gpu)
+    pipeline.text_encoder.to(device=device)
+pipeline.generator.to(device=device)
+pipeline.vae.to(device=device)
 
 
 # Create dataset
@@ -119,13 +127,13 @@ if args.report_timing and num_prompts < 2:
     args.report_timing = False
 
 if dist.is_initialized():
-    sampler = DistributedSampler(dataset, shuffle=False, drop_last=True)
+    sampler = range(rank, num_prompts, world_size)
 else:
     sampler = SequentialSampler(dataset)
 dataloader = DataLoader(dataset, batch_size=1, sampler=sampler, num_workers=0, drop_last=False)
 
 # Create output directory (only on main process to avoid race conditions)
-if local_rank == 0:
+if rank == 0:
     os.makedirs(args.output_folder, exist_ok=True)
 
 if dist.is_initialized():
@@ -144,7 +152,33 @@ def encode(self, videos: torch.Tensor) -> torch.Tensor:
     return output
 
 
-for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
+def video_is_complete(path, expected_frames):
+    if not os.path.isfile(path):
+        return False
+    try:
+        with av.open(path) as container:
+            if not container.streams.video:
+                return False
+            return sum(1 for _ in container.decode(video=0)) == expected_frames
+    except (av.error.FFmpegError, OSError, EOFError):
+        return False
+
+
+def save_video(path, frames):
+    with tempfile.NamedTemporaryFile(
+        dir=os.path.dirname(path), prefix=".inference-", suffix=".mp4", delete=False
+    ) as temporary:
+        temporary_path = temporary.name
+    try:
+        write_video(temporary_path, frames, fps=16)
+        os.replace(temporary_path, path)
+    finally:
+        Path(temporary_path).unlink(missing_ok=True)
+
+
+expected_frames = 1 + 4 * (args.num_output_frames - 1)
+
+for i, batch_data in tqdm(enumerate(dataloader), disable=(rank != 0)):
     idx = batch_data['idx'].item()
 
     if isinstance(batch_data, dict):
@@ -161,7 +195,7 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
         # For image-to-video, batch contains image and caption
         prompt = batch['prompts'][0]  # Get caption from batch
         output_path = os.path.join(args.output_folder, f'{prompt[:100]}.mp4')
-        if os.path.exists(output_path):
+        if video_is_complete(output_path, expected_frames):
             print('Video has been generated. Pass!')
             continue
         # Process the image
@@ -176,8 +210,8 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     else:
         # For text-to-video, batch is just the text prompt
         prompt = batch['prompts'][0]
-        output_path = os.path.join(args.output_folder, f'{prompt[:100]}.mp4')
-        if os.path.exists(output_path):
+        output_path = os.path.join(args.output_folder, f'{prompt}.mp4')
+        if video_is_complete(output_path, expected_frames):
             print('Video has been generated. Pass!')
             continue
         extended_prompt = batch['extended_prompts'][0] if 'extended_prompts' in batch else None
@@ -221,7 +255,9 @@ for i, batch_data in tqdm(enumerate(dataloader), disable=(local_rank != 0)):
     # Clear VAE cache
     pipeline.vae.model.clear_cache()
 
-    output_path = os.path.join(args.output_folder, f'{prompt[:100]}.mp4')
-    write_video(output_path, video[0], fps=16)
+    save_video(output_path, video[0])
 
        
+
+if dist.is_initialized():
+    dist.destroy_process_group()

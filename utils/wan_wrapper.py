@@ -32,14 +32,12 @@ class LoRALinear(nn.Linear):
         return super().forward(x) + self.lora_up(self.dropout(self.lora_down(x))) * self.scaling
 
 
-def add_lora_adapters(module: nn.Module, rank: int, alpha: float, dropout: float, targets: tuple[str, ...], exclude_cross_attention=False):
+def add_lora_adapters(module: nn.Module, rank: int, alpha: float, dropout: float, targets: tuple[str, ...]):
     for name, child in list(module.named_children()):
-        if exclude_cross_attention and name == "cross_attn":
-            continue
         if isinstance(child, nn.Linear) and name in targets:
             setattr(module, name, LoRALinear(child, rank, alpha, dropout))
         else:
-            add_lora_adapters(child, rank, alpha, dropout, targets, exclude_cross_attention)
+            add_lora_adapters(child, rank, alpha, dropout, targets)
 
 
 class WanTextEncoder(torch.nn.Module):
@@ -174,7 +172,6 @@ class WanDiffusionWrapper(torch.nn.Module):
             lora_alpha=None,
             lora_dropout=0.0,
             lora_target_modules=("q", "k", "v", "o"),
-            lora_exclude_cross_attention=False,
             use_action_conditioning=False,
     ):
         super().__init__()
@@ -194,7 +191,6 @@ class WanDiffusionWrapper(torch.nn.Module):
                 alpha=lora_alpha or lora_rank,
                 dropout=lora_dropout,
                 targets=tuple(lora_target_modules),
-                exclude_cross_attention=lora_exclude_cross_attention,
             )
             self.model.requires_grad_(False)
             for name, parameter in self.model.named_parameters():

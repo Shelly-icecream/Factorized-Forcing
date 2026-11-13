@@ -26,7 +26,6 @@ model_kwargs:
   timestep_shift: 5.0
   lora_rank: 8
   lora_alpha: 8
-  lora_exclude_cross_attention: true
   use_action_conditioning: true
 
 denoising_step_list: [1000, 750, 500, 250]
@@ -47,7 +46,7 @@ load_raw_video: false
 generator_action_scale: 0.5
 factorized_microbatch: 1
 factorized_normalize: true
-factorized_component_weights: {empty: 1.0, P: 0.0, B: 0.0, A: 0.0, PAB: 1.0}
+factorized_component_weights: {empty: 1.0, P: 0.0, B: 0.0, A: 0.5, PAB: 1.0}
 z_normalization_mode: timestep_ema
 z_ema_decay: 0.99
 z_ema_eps: 1.0e-6

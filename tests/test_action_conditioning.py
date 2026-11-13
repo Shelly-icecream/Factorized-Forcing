@@ -44,7 +44,7 @@ class ActionConditioningTests(unittest.TestCase):
         torch.testing.assert_close(result['generator_prompt_embeds'][1], result['prompt_embeds'][1])
         self.assertEqual(result['generator_prompt_embeds'][:, 2].abs().sum().item(), 0.)
 
-    def test_lora_exclusion_uses_real_installer(self):
+    def test_lora_covers_self_and_cross_attention(self):
         # Load the installer alone without importing CUDA/Wan dependencies.
         tree = ast.parse(Path('utils/wan_wrapper.py').read_text())
         function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == 'add_lora_adapters')
@@ -59,9 +59,9 @@ class ActionConditioningTests(unittest.TestCase):
             branch = nn.Module()
             branch.q = nn.Linear(2, 2)
             model.add_module(name, branch)
-        namespace['add_lora_adapters'](model, 1, 1, 0, ('q',), True)
+        namespace['add_lora_adapters'](model, 1, 1, 0, ('q',))
         self.assertIsInstance(model.self_attn.q, Adapter)
-        self.assertIsInstance(model.cross_attn.q, nn.Linear)
+        self.assertIsInstance(model.cross_attn.q, Adapter)
 
 
 if __name__ == '__main__':
