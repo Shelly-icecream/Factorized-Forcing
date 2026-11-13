@@ -32,17 +32,24 @@ class LoRALinear(nn.Linear):
         return super().forward(x) + self.lora_up(self.dropout(self.lora_down(x))) * self.scaling
 
 
-def add_lora_adapters(module: nn.Module, rank: int, alpha: float, dropout: float, targets: tuple[str, ...]):
+def add_lora_adapters(module: nn.Module, rank: int, alpha: float, dropout: float, targets: tuple[str, ...], exclude_cross_attention=False):
     for name, child in list(module.named_children()):
+        if exclude_cross_attention and name == "cross_attn":
+            continue
         if isinstance(child, nn.Linear) and name in targets:
             setattr(module, name, LoRALinear(child, rank, alpha, dropout))
         else:
-            add_lora_adapters(child, rank, alpha, dropout, targets)
+            add_lora_adapters(child, rank, alpha, dropout, targets, exclude_cross_attention)
 
 
 class WanTextEncoder(torch.nn.Module):
-    def __init__(self) -> None:
+    def __init__(self, generator_action_scale=0.0, action_parser_version="spacy_en_v1_multi_action") -> None:
         super().__init__()
+        import math
+        if not math.isfinite(float(generator_action_scale)) or generator_action_scale < 0:
+            raise ValueError("generator_action_scale must be finite and nonnegative")
+        self.generator_action_scale = float(generator_action_scale)
+        self.action_parser_version = action_parser_version
 
         self.text_encoder = umt5_xxl(
             encoder_only=True,
@@ -65,7 +72,7 @@ class WanTextEncoder(torch.nn.Module):
         # Assume we are always on GPU
         return torch.cuda.current_device()
 
-    def forward(self, text_prompts: List[str]) -> dict:
+    def forward(self, text_prompts: List[str], _action_pass=False) -> dict:
         ids, mask = self.tokenizer(
             text_prompts, return_mask=True, add_special_tokens=True)
         ids = ids.to(self.device)
@@ -76,9 +83,21 @@ class WanTextEncoder(torch.nn.Module):
         for u, v in zip(context, seq_lens):
             u[v:] = 0.0  # set padding to 0.0
 
-        return {
-            "prompt_embeds": context
-        }
+        result = {"prompt_embeds": context}
+        if self.generator_action_scale and not _action_pass:
+            from utils.action_conditioning import extract_action, enhance_action_projection
+            texts = [extract_action(text, self.action_parser_version) for text in text_prompts]
+            indices = [i for i, text in enumerate(texts) if text]
+            if indices:
+                action_texts = [texts[i] for i in indices]
+                encoded = self.forward(action_texts, _action_pass=True)["prompt_embeds"]
+                _, action_mask = self.tokenizer(action_texts, return_mask=True, add_special_tokens=True)
+                lengths = action_mask.gt(0).sum(dim=1).tolist()
+                actions = [None] * len(texts)
+                for i, value, length in zip(indices, encoded, lengths):
+                    actions[i] = value[:length]
+                result["generator_prompt_embeds"] = enhance_action_projection(context, actions, self.generator_action_scale)
+        return result
 
 
 class WanVAEWrapper(torch.nn.Module):
@@ -154,7 +173,9 @@ class WanDiffusionWrapper(torch.nn.Module):
             lora_rank=0,
             lora_alpha=None,
             lora_dropout=0.0,
-            lora_target_modules=("q", "k", "v", "o")
+            lora_target_modules=("q", "k", "v", "o"),
+            lora_exclude_cross_attention=False,
+            use_action_conditioning=False,
     ):
         super().__init__()
 
@@ -165,6 +186,7 @@ class WanDiffusionWrapper(torch.nn.Module):
             self.model = WanModel.from_pretrained(f"wan_models/{model_name}/")
         self.model.eval()
         self.lora_rank = lora_rank
+        self.use_action_conditioning = use_action_conditioning
         if lora_rank > 0:
             add_lora_adapters(
                 self.model,
@@ -172,6 +194,7 @@ class WanDiffusionWrapper(torch.nn.Module):
                 alpha=lora_alpha or lora_rank,
                 dropout=lora_dropout,
                 targets=tuple(lora_target_modules),
+                exclude_cross_attention=lora_exclude_cross_attention,
             )
             self.model.requires_grad_(False)
             for name, parameter in self.model.named_parameters():
@@ -287,6 +310,8 @@ class WanDiffusionWrapper(torch.nn.Module):
         cache_start: Optional[int] = None
     ) -> torch.Tensor:
         prompt_embeds = conditional_dict["prompt_embeds"]
+        if self.use_action_conditioning:
+            prompt_embeds = conditional_dict.get("generator_prompt_embeds", prompt_embeds)
 
         # [B, F] -> [B]
         if self.uniform_timestep:

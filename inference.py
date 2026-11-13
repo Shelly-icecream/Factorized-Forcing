@@ -57,6 +57,11 @@ torch.set_grad_enabled(False)
 config = OmegaConf.load(args.config_path)
 default_config = OmegaConf.load("configs/default_config.yaml")
 config = OmegaConf.merge(default_config, config)
+if args.checkpoint_path:
+    from pathlib import Path
+    companion = Path(args.checkpoint_path).with_suffix(".config.json")
+    if companion.is_file():
+        config = OmegaConf.merge(config, OmegaConf.load(companion))
 
 # Initialize pipeline
 if hasattr(config, 'denoising_step_list'):

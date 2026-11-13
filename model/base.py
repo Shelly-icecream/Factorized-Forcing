@@ -55,7 +55,7 @@ class BaseModel(nn.Module):
         self.fake_score = WanDiffusionWrapper(model_name=self.fake_model_name, is_causal=False)
         self.fake_score.model.requires_grad_(getattr(args, "train_fake_score", True))
 
-        self.text_encoder = WanTextEncoder()
+        self.text_encoder = WanTextEncoder(generator_action_scale=getattr(args, "generator_action_scale", 0.0), action_parser_version=getattr(args, "factorized_parser_version", "spacy_en_v1_multi_action"))
         self.text_encoder.requires_grad_(False)
 
         self.vae = WanVAEWrapper()
@@ -104,7 +104,7 @@ class BaseModel(nn.Module):
             cpu_offload=getattr(args, "fake_score_cpu_offload", False),
         )
 
-        self.text_encoder = WanTextEncoder()
+        self.text_encoder = WanTextEncoder(generator_action_scale=getattr(args, "generator_action_scale", 0.0), action_parser_version=getattr(args, "factorized_parser_version", "spacy_en_v1_multi_action"))
         self.text_encoder.requires_grad_(False)
         self.text_encoder = fsdp_wrap(
             self.text_encoder,

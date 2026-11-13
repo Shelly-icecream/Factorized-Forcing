@@ -17,7 +17,7 @@ class BidirectionalInferencePipeline(torch.nn.Module):
         # Step 1: Initialize all models
         self.generator = WanDiffusionWrapper(
             **getattr(args, "model_kwargs", {}), is_causal=False) if generator is None else generator
-        self.text_encoder = WanTextEncoder() if text_encoder is None else text_encoder
+        self.text_encoder = WanTextEncoder(generator_action_scale=getattr(args, "generator_action_scale", 0.0), action_parser_version=getattr(args, "factorized_parser_version", "spacy_en_v1_multi_action")) if text_encoder is None else text_encoder
         self.vae = WanVAEWrapper() if vae is None else vae
 
         # Step 2: Initialize all bidirectional wan hyperparmeters
